@@ -1,0 +1,103 @@
+--- a/redirect_linux.go
++++ b/redirect_linux.go
+@@ -60,6 +60,12 @@
+ 	if runtime.GOOS == "android" {
+ 		r.enableIPv4 = true
+ 		r.iptablesPath = "/system/bin/iptables"
++		
++		if len(r.tunOptions.Inet6Address) > 0 {
++			r.enableIPv6 = true
++			r.ip6tablesPath = "/system/bin/ip6tables"
++		}
++		
+ 		userId := os.Getuid()
+ 		if userId != 0 {
+ 			r.androidSu = true
+@@ -119,7 +125,11 @@
+ 	if r.customRedirectPort == 0 {
+ 		var listenAddr netip.Addr
+ 		if runtime.GOOS == "android" {
+-			listenAddr = netip.AddrFrom4([4]byte{127, 0, 0, 1})
++			if r.enableIPv6 {
++				listenAddr = netip.IPv6Unspecified()
++			} else {
++				listenAddr = netip.AddrFrom4([4]byte{127, 0, 0, 1})
++			}
+ 		} else if r.enableIPv6 {
+ 			listenAddr = netip.IPv6Unspecified()
+ 		} else {
+
+--- a/redirect_server.go
++++ b/redirect_server.go
+@@ -38,12 +38,32 @@
+ 
+ func (s *redirectServer) Start() error {
+ 	var listenConfig net.ListenConfig
+-	// listenConfig.KeepAlive = C.TCPKeepAliveInitial
+ 	listenConfig.KeepAlive = 10 * time.Minute
+-	listener, err := listenConfig.Listen(s.ctx, M.NetworkFromNetAddr("tcp", s.listenAddr), M.SocksaddrFrom(s.listenAddr, 0).String())
++
++	var listener net.Listener
++	var err error
++
++	if s.listenAddr.Is4() {
++		listener, err = listenConfig.Listen(s.ctx, "tcp4", M.SocksaddrFrom(s.listenAddr, 0).String())
++	} else if s.listenAddr.Is6() {
++		listener, err = listenConfig.Listen(s.ctx, "tcp6", M.SocksaddrFrom(s.listenAddr, 0).String())
++	} else {
++		ipv4Listener, err4 := listenConfig.Listen(s.ctx, "tcp4", ":0")
++		if err4 == nil {
++			listener = ipv4Listener
++		} else {
++			ipv6Listener, err6 := listenConfig.Listen(s.ctx, "tcp6", ":0")
++			if err6 != nil {
++				return E.Extend(err4, "failed to listen on both IPv4 and IPv6")
++			}
++			listener = ipv6Listener
++		}
++	}
++
+ 	if err != nil {
+ 		return err
+ 	}
++
+ 	s.listener = listener.(*net.TCPListener)
+ 	go s.loopIn()
+ 	return nil
+@@ -59,8 +79,6 @@
+ 		conn, err := s.listener.AcceptTCP()
+ 		if err != nil {
+ 			var netError net.Error
+-			//goland:noinspection GoDeprecation
+-			//nolint:staticcheck
+ 			if errors.As(err, &netError) && netError.Temporary() {
+ 				s.logger.Error(err)
+ 				continue
+@@ -85,4 +103,4 @@
+ 		metadata.Destination = M.SocksaddrFromNetIP(destination).Unwrap()
+ 		go s.handler.NewConnection(s.ctx, conn, metadata)
+ 	}
+-}
++}
+--- redirect_iptables.go	2026-04-06 07:38:46.758000000 +0800
++++ redirect_iptables.go	2026-04-14 02:50:34.154062833 +0800
+@@ -50,9 +50,6 @@
+ 	if err != nil {
+ 		return err
+ 	}
+-	if runtime.GOOS == "android" {
+-		return nil
+-	}
+ 	// INPUT
+ 	err = r.runShell(iptablesPath, "-N", tableNameInput)
+ 	if err != nil {
+@@ -249,9 +246,6 @@
+ 	_ = r.runShell(iptablesPath, "-t nat -D OUTPUT -j", tableNameOutput)
+ 	_ = r.runShell(iptablesPath, "-t nat -F", tableNameOutput)
+ 	_ = r.runShell(iptablesPath, "-t nat -X", tableNameOutput)
+-	if runtime.GOOS == "android" {
+-		return
+-	}
+ 
+ 	_ = r.runShell(iptablesPath, "-D INPUT -j", tableNameInput)
+ 	_ = r.runShell(iptablesPath, "-F", tableNameInput)
