@@ -1,0 +1,126 @@
+name: Build Android arm64
+on:
+  push:
+    branches:
+      - Alpha
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+env:
+  REGISTRY: docker.io
+
+jobs:
+  build-android-arm64:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.26.0'
+
+    - name: Download dependencies
+      run: |
+        go mod download
+        go mod tidy
+
+    - name: Apply patch to sing-tun (idempotent)
+      run: |
+        SING_TUN_VERSION=$(go list -m github.com/metacubex/sing-tun | awk '{print $2}')
+        SING_TUN_DIR="$(go env GOMODCACHE)/github.com/metacubex/sing-tun@${SING_TUN_VERSION}"
+        
+        echo "Sing-tun version: $SING_TUN_VERSION"
+        echo "Sing-tun directory: $SING_TUN_DIR"
+        
+        chmod -R +w ${SING_TUN_DIR}
+        cd ${SING_TUN_DIR}
+        
+        wget -O sing-tun.patch https://raw.githubusercontent.com/TanakaLun/mihomo/cb49c90be1dde6e219a4a08dff59239b5836559f/.github/patch/sing-tun.patch
+        
+        if grep -q "if len(r.tunOptions.Inet6Address) > 0 && runtime.GOOS == \"android\"" redirect_linux.go 2>/dev/null; then
+          echo "Patch already applied (IPv6 Android code found), skipping..."
+          exit 0
+        fi
+        
+        if patch -p1 --reverse --dry-run < sing-tun.patch 2>/dev/null; then
+          echo "Patch already applied (reverse dry-run succeeded), skipping..."
+          exit 0
+        fi
+        
+        if patch -p1 --dry-run < sing-tun.patch 2>&1 | grep -q "Reversed (or previously applied) patch detected"; then
+          echo "Patch already applied (dry-run detected reversal), skipping..."
+          exit 0
+        fi
+        
+        echo "Applying patch for the first time..."
+        if patch -p1 < sing-tun.patch; then
+          echo "Patch applied successfully to sing-tun"
+        else
+          echo "Failed to apply patch"
+          echo "=== Dry run patch to see issues ==="
+          patch -p1 --dry-run < sing-tun.patch
+          exit 1
+        fi
+        
+        echo "=== Verifying patch changes ==="
+        echo "Checking redirect_linux.go for IPv6 Android changes:"
+        grep -A5 "if len(r.tunOptions.Inet6Address) > 0" redirect_linux.go || echo "IPv6 change not found"
+        
+        echo "Checking redirect_server.go for dual-stack changes:"
+        grep -B2 "if s.listenAddr.Is4()" redirect_server.go || echo "Dual-stack change not found"
+
+    - name: Set variables
+      run: |
+        VERSION="TanakaLun-$(git rev-parse --short HEAD)"
+        VERSION="${VERSION//\//-}"
+        echo "VERSION=${VERSION}" >> $GITHUB_ENV
+        echo "BUILDTIME=$(date)" >> $GITHUB_ENV
+        echo "CGO_ENABLED=1" >> $GITHUB_ENV
+
+    - name: Setup NDK
+      uses: nttld/setup-ndk@v1
+      id: setup-ndk
+      with:
+        ndk-version: r29-beta1
+
+    - name: Set NDK environment
+      run: |
+        NDK_PATH=${{ steps.setup-ndk.outputs.ndk-path }}
+        echo "CC=${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android34-clang" >> $GITHUB_ENV
+        echo "CGO_ENABLED=1" >> $GITHUB_ENV
+        echo "GOOS=android" >> $GITHUB_ENV
+        echo "GOARCH=arm64" >> $GITHUB_ENV
+
+    - name: Verify Go environment
+      run: go env
+
+    - name: Build mihomo for Android arm64 (with patched sing-tun)
+      run: |
+        go clean -cache
+        
+        go build -v -tags "with_gvisor" -trimpath \
+          -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' \
+                    -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' \
+                    -w -s -buildid=" \
+          -o mihomo-android-arm64
+          
+    - name: Compress binary
+      run: |
+        gzip -c mihomo-android-arm64 > mihomo-android-arm64-${VERSION}.gz
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: android-arm64
+        path: |
+          mihomo-android-arm64*.gz
+          version.txt
+
+    - name: Save version
+      run: echo ${VERSION} > version.txt
