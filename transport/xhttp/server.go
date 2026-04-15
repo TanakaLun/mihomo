@@ -80,9 +80,9 @@ type httpSession struct {
 	once        sync.Once
 }
 
-func newHTTPSession() *httpSession {
+func newHTTPSession(maxPackets int) *httpSession {
 	return &httpSession{
-		uploadQueue: NewUploadQueue(),
+		uploadQueue: NewUploadQueue(maxPackets),
 		connected:   make(chan struct{}),
 	}
 }
@@ -100,6 +100,7 @@ type requestHandler struct {
 
 	scMaxEachPostBytes   Range
 	scStreamUpServerSecs Range
+	scMaxBufferedPosts   Range
 
 	mu       sync.Mutex
 	sessions map[string]*httpSession
@@ -114,6 +115,10 @@ func NewServerHandler(opt ServerOption) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	scMaxBufferedPosts, err := opt.Config.GetNormalizedScMaxBufferedPosts()
+	if err != nil {
+		return nil, err
+	}
 	// using h2c.NewHandler to ensure we can work in plain http2
 	// and some tls conn is not *tls.Conn (like *reality.Conn)
 	return h2c.NewHandler(&requestHandler{
@@ -122,6 +127,7 @@ func NewServerHandler(opt ServerOption) (http.Handler, error) {
 		httpHandler:          opt.HttpHandler,
 		scMaxEachPostBytes:   scMaxEachPostBytes,
 		scStreamUpServerSecs: scStreamUpServerSecs,
+		scMaxBufferedPosts:   scMaxBufferedPosts,
 		sessions:             map[string]*httpSession{},
 	}, &http.Http2Server{
 		IdleTimeout: 30 * time.Second,
@@ -137,7 +143,7 @@ func (h *requestHandler) getOrCreateSession(sessionID string) *httpSession {
 		return s
 	}
 
-	s = newHTTPSession()
+	s = newHTTPSession(h.scMaxBufferedPosts.Max)
 	h.sessions[sessionID] = s
 	return s
 }
@@ -371,10 +377,11 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := session.uploadQueue.Push(Packet{
+		err = session.uploadQueue.Push(Packet{
 			Seq:     seq,
 			Payload: body,
-		}); err != nil {
+		})
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

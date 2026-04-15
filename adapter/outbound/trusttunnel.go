@@ -38,6 +38,7 @@ type TrustTunnelOption struct {
 	Quic                 bool   `proxy:"quic,omitempty"`
 	CongestionController string `proxy:"congestion-controller,omitempty"`
 	CWND                 int    `proxy:"cwnd,omitempty"`
+	BBRProfile           string `proxy:"bbr-profile,omitempty"`
 	// reuse options
 	MaxConnections int `proxy:"max-connections,omitempty"`
 	MinStreams     int `proxy:"min-streams,omitempty"`
@@ -110,6 +111,7 @@ func NewTrustTunnel(option TrustTunnelOption) (*TrustTunnel, error) {
 		QUIC:                  option.Quic,
 		QUICCongestionControl: option.CongestionController,
 		QUICCwnd:              option.CWND,
+		QUICBBRProfile:        option.BBRProfile,
 		HealthCheck:           option.HealthCheck,
 		MaxConnections:        option.MaxConnections,
 		MinStreams:            option.MinStreams,

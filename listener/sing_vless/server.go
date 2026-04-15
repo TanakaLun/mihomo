@@ -161,6 +161,7 @@ func New(config LC.VlessServer, tunnel C.Tunnel, additions ...inbound.Addition) 
 				Mode:                 config.XHTTPConfig.Mode,
 				NoSSEHeader:          config.XHTTPConfig.NoSSEHeader,
 				ScStreamUpServerSecs: config.XHTTPConfig.ScStreamUpServerSecs,
+				ScMaxBufferedPosts:   config.XHTTPConfig.ScMaxBufferedPosts,
 				ScMaxEachPostBytes:   config.XHTTPConfig.ScMaxEachPostBytes,
 			},
 			ConnHandler: func(conn net.Conn) {

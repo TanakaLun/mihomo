@@ -1,6 +1,7 @@
 package xhttp
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -39,36 +40,71 @@ type DialQUICFunc func(ctx context.Context, cfg *quic.Config) (*quic.Conn, error
 type TransportMaker func() http.RoundTripper
 
 type PacketUpWriter struct {
-	ctx                context.Context
-	cancel             context.CancelFunc
-	cfg                *Config
-	scMaxEachPostBytes Range
-	sessionID          string
-	transport          http.RoundTripper
-	writeMu            sync.Mutex
-	seq                uint64
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	cfg                  *Config
+	scMaxEachPostBytes   int
+	scMinPostsIntervalMs Range
+	sessionID            string
+	transport            http.RoundTripper
+	writeMu              sync.Mutex
+	writeCond            sync.Cond
+	seq                  uint64
+	buf                  []byte
+	timer                *time.Timer
+	flushErr             error
 }
 
 func (c *PacketUpWriter) Write(b []byte) (int, error) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	scMaxEachPostBytes := c.scMaxEachPostBytes.Rand()
-	if len(b) < scMaxEachPostBytes {
-		return c.write(b)
+
+	if err := c.flushErr; err != nil {
+		return 0, err
 	}
-	var n int
-	for start := 0; start < len(b); start += scMaxEachPostBytes {
-		end := start + scMaxEachPostBytes
-		if end > len(b) {
-			end = len(b)
+
+	data := bytes.NewBuffer(b)
+	for data.Len() > 0 {
+		if c.timer == nil { // start a timer to flush the buffer
+			c.timer = time.AfterFunc(time.Duration(c.scMinPostsIntervalMs.Rand())*time.Millisecond, c.flush)
 		}
-		_n, err := c.write(b[start:end])
-		n += _n
-		if err != nil {
-			return n, err
+
+		c.buf = append(c.buf, data.Next(c.scMaxEachPostBytes-len(c.buf))...) // let buffer fill up to scMaxEachPostBytes
+
+		if len(c.buf) >= c.scMaxEachPostBytes { // too much data in buffer, wait the flush complete
+			c.writeCond.Wait()
+			if err := c.flushErr; err != nil {
+				return 0, err
+			}
 		}
 	}
-	return n, nil
+	return len(b), nil
+}
+
+func (c *PacketUpWriter) flush() {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	defer c.writeCond.Broadcast() // wake up the waited Write() call
+
+	if c.timer != nil {
+		c.timer.Stop()
+		c.timer = nil
+	}
+
+	if c.flushErr != nil {
+		return
+	}
+
+	if len(c.buf) == 0 {
+		return
+	}
+	_, err := c.write(c.buf)
+	c.buf = c.buf[:0] // reset buffer
+	if err != nil {
+		c.flushErr = err
+		return
+	}
 }
 
 func (c *PacketUpWriter) write(b []byte) (int, error) {
@@ -106,6 +142,15 @@ func (c *PacketUpWriter) write(b []byte) (int, error) {
 }
 
 func (c *PacketUpWriter) Close() error {
+	ch := make(chan struct{})
+	go func() { // flush in the background
+		defer close(ch)
+		c.flush()
+	}()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+	}
 	c.cancel()
 	httputils.CloseTransport(c.transport)
 	return nil
@@ -185,6 +230,7 @@ type Client struct {
 	mode                  string
 	cfg                   *Config
 	scMaxEachPostBytes    Range
+	scMinPostsIntervalMs  Range
 	makeTransport         TransportMaker
 	makeDownloadTransport TransportMaker
 	uploadManager         *ReuseManager
@@ -202,12 +248,17 @@ func NewClient(cfg *Config, makeTransport TransportMaker, makeDownloadTransport 
 	if err != nil {
 		return nil, err
 	}
+	scMinPostsIntervalMs, err := cfg.GetNormalizedScMinPostsIntervalMs()
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	client := &Client{
 		mode:                  mode,
 		cfg:                   cfg,
 		scMaxEachPostBytes:    scMaxEachPostBytes,
+		scMinPostsIntervalMs:  scMinPostsIntervalMs,
 		makeTransport:         makeTransport,
 		makeDownloadTransport: makeDownloadTransport,
 		ctx:                   ctx,
@@ -218,6 +269,7 @@ func NewClient(cfg *Config, makeTransport TransportMaker, makeDownloadTransport 
 		if err != nil {
 			return nil, err
 		}
+		client.makeTransport = client.uploadManager.GetTransport
 		if cfg.DownloadConfig != nil {
 			if makeDownloadTransport == nil {
 				return nil, fmt.Errorf("xhttp: download manager requires download transport maker")
@@ -226,6 +278,7 @@ func NewClient(cfg *Config, makeTransport TransportMaker, makeDownloadTransport 
 			if err != nil {
 				return nil, err
 			}
+			client.makeDownloadTransport = client.downloadManager.GetTransport
 		}
 	}
 	return client, nil
@@ -268,26 +321,10 @@ type onlyRoundTripper struct {
 }
 
 func (c *Client) getTransport() (uploadTransport http.RoundTripper, downloadTransport http.RoundTripper, err error) {
-	if c.uploadManager == nil {
-		uploadTransport = c.makeTransport()
-		downloadTransport = onlyRoundTripper{uploadTransport}
-		if c.makeDownloadTransport != nil {
-			downloadTransport = c.makeDownloadTransport()
-		}
-	} else {
-		uploadTransport, err = c.uploadManager.GetTransport()
-		if err != nil {
-			return
-		}
-
-		downloadTransport = onlyRoundTripper{uploadTransport}
-		if c.downloadManager != nil {
-			downloadTransport, err = c.downloadManager.GetTransport()
-			if err != nil {
-				httputils.CloseTransport(uploadTransport)
-				return
-			}
-		}
+	uploadTransport = c.makeTransport()
+	downloadTransport = onlyRoundTripper{uploadTransport}
+	if c.makeDownloadTransport != nil {
+		downloadTransport = c.makeDownloadTransport()
 	}
 	return
 }
@@ -469,14 +506,16 @@ func (c *Client) DialPacketUp() (net.Conn, error) {
 
 	writerCtx, writerCancel := context.WithCancel(c.ctx)
 	writer := &PacketUpWriter{
-		ctx:                writerCtx,
-		cancel:             writerCancel,
-		cfg:                c.cfg,
-		scMaxEachPostBytes: c.scMaxEachPostBytes,
-		sessionID:          sessionID,
-		transport:          uploadTransport,
-		seq:                0,
+		ctx:                  writerCtx,
+		cancel:               writerCancel,
+		cfg:                  c.cfg,
+		scMaxEachPostBytes:   c.scMaxEachPostBytes.Rand(),
+		scMinPostsIntervalMs: c.scMinPostsIntervalMs,
+		sessionID:            sessionID,
+		transport:            uploadTransport,
+		seq:                  0,
 	}
+	writer.writeCond = sync.Cond{L: &writer.writeMu}
 	conn := &Conn{writer: writer}
 
 	downloadReq, err := http.NewRequestWithContext(

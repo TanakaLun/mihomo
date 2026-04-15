@@ -52,6 +52,7 @@ type TuicOption struct {
 	FastOpen             bool       `proxy:"fast-open,omitempty"`
 	MaxOpenStreams       int        `proxy:"max-open-streams,omitempty"`
 	CWND                 int        `proxy:"cwnd,omitempty"`
+	BBRProfile           string     `proxy:"bbr-profile,omitempty"`
 	SkipCertVerify       bool       `proxy:"skip-cert-verify,omitempty"`
 	Fingerprint          string     `proxy:"fingerprint,omitempty"`
 	Certificate          string     `proxy:"certificate,omitempty"`
@@ -113,7 +114,7 @@ func (t *Tuic) dial(ctx context.Context) (quicConn *quic.Conn, err error) {
 	if err != nil {
 		return nil, err
 	}
-	common.SetCongestionController(quicConn, t.option.CongestionController, t.option.CWND)
+	common.SetCongestionController(quicConn, t.option.CongestionController, t.option.CWND, t.option.BBRProfile)
 	return quicConn, nil
 }
 

@@ -36,6 +36,7 @@ type XHTTPConfig struct {
 	Mode                 string
 	NoSSEHeader          bool
 	ScStreamUpServerSecs string
+	ScMaxBufferedPosts   string
 	ScMaxEachPostBytes   string
 }
 

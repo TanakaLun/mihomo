@@ -69,6 +69,7 @@ type MasqueOption struct {
 
 	CongestionController string `proxy:"congestion-controller,omitempty"`
 	CWND                 int    `proxy:"cwnd,omitempty"`
+	BBRProfile           string `proxy:"bbr-profile,omitempty"`
 
 	RemoteDnsResolve bool     `proxy:"remote-dns-resolve,omitempty"`
 	Dns              []string `proxy:"dns,omitempty"`
@@ -262,7 +263,7 @@ func (w *Masque) run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		common.SetCongestionController(quicConn, w.option.CongestionController, w.option.CWND)
+		common.SetCongestionController(quicConn, w.option.CongestionController, w.option.CWND, w.option.BBRProfile)
 
 		closer, ipConn, err = masque.ConnectTunnel(ctx, quicConn, w.uri)
 		if err != nil {
