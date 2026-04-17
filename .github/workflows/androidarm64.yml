@@ -77,7 +77,7 @@ jobs:
         grep -B2 "if s.listenAddr.Is4()" redirect_server.go || echo "Dual-stack change not found"
 
     - name: Modify the Update Link
-      run: sed -i 's|github\.com/MetaCubeX/mihomo|github.com/TanakaLun/mihomo|g' /component/updater/update_core.go
+      run: sed -i 's|github\.com/MetaCubeX/mihomo|github.com/TanakaLun/mihomo|g' ./component/updater/update_core.go
 
     - name: Set variables
       run: |
@@ -107,7 +107,7 @@ jobs:
     - name: Build mihomo for Android arm64 (with patched sing-tun)
       run: |
         go clean -cache
-        sed -i 's|github\.com/MetaCubeX/mihomo|github.com/TanakaLun/mihomo|g' /component/updater/update_core.go
+        
         go build -v -tags "with_gvisor" -trimpath \
           -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' \
                     -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' \
