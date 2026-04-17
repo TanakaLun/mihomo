@@ -103,6 +103,7 @@ func NewSingMux(option SingMuxOption, proxy ProxyAdapter) (ProxyAdapter, error) 
 		MinStreams:     option.MinStreams,
 		MaxStreams:     option.MaxStreams,
 		Padding:        option.Padding,
+		TCPTimeout:     C.DefaultTCPTimeout,
 		Brutal: mux.BrutalOptions{
 			Enabled:    option.BrutalOpts.Enabled,
 			SendBPS:    StringToBps(option.BrutalOpts.Up),

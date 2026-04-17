@@ -98,8 +98,6 @@ func (ss *Socks5) ListenPacketContext(ctx context.Context, metadata *C.Metadata)
 
 	if ss.tls {
 		cc := tls.Client(c, ss.tlsConfig)
-		ctx, cancel := context.WithTimeout(context.Background(), C.DefaultTLSTimeout)
-		defer cancel()
 		err = cc.HandshakeContext(ctx)
 		c = cc
 	}

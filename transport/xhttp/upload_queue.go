@@ -6,6 +6,8 @@ import (
 	"sync"
 )
 
+var ErrQueueTooLarge = errors.New("packet queue is too large")
+
 type Packet struct {
 	Seq     uint64
 	Payload []byte // UploadQueue will hold Payload, so never reuse it after UploadQueue.Push
@@ -97,7 +99,7 @@ func (q *UploadQueue) Read(b []byte) (int, error) {
 			q.mu.Unlock()
 			// the "reassembly buffer" is too large, and we want to constrain memory usage somehow.
 			// let's tear down the connection and hope the application retries.
-			return 0, errors.New("packet queue is too large")
+			return 0, ErrQueueTooLarge
 		}
 
 		q.condPushed.Wait()

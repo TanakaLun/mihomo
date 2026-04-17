@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/httputils"
@@ -95,6 +96,7 @@ type httpConn struct {
 	writer    io.Writer
 	flusher   http.Flusher
 	body      io.ReadCloser
+	setupOnce sync.Once
 	created   chan struct{}
 	createErr error
 	cancelFn  func()
@@ -105,19 +107,28 @@ type httpConn struct {
 	deadline *time.Timer
 }
 
-func (h *httpConn) setUp(body io.ReadCloser, err error) {
-	h.body = body
-	h.createErr = err
-	close(h.created)
+func (h *httpConn) setup(body io.ReadCloser, err error) {
+	h.setupOnce.Do(func() {
+		h.body = body
+		h.createErr = err
+		close(h.created)
+	})
+	if h.createErr != nil && body != nil { // conn already closed before setup
+		_ = body.Close()
+	}
 }
 
 func (h *httpConn) waitCreated() error {
 	<-h.created
+	if h.body != nil {
+		return nil
+	}
 	return h.createErr
 }
 
 func (h *httpConn) Close() error {
 	var errorArr []error
+	h.setup(nil, net.ErrClosed)
 	if closer, ok := h.writer.(io.Closer); ok {
 		errorArr = append(errorArr, closer.Close())
 	}
