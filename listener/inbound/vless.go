@@ -35,6 +35,20 @@ type XHTTPConfig struct {
 	Path                 string `inbound:"path,omitempty"`
 	Host                 string `inbound:"host,omitempty"`
 	Mode                 string `inbound:"mode,omitempty"`
+	XPaddingBytes        string `inbound:"xpadding-bytes,omitempty"`
+	XPaddingObfsMode     bool   `inbound:"xpadding-obfs-mode,omitempty"`
+	XPaddingKey          string `inbound:"xpadding-key,omitempty"`
+	XPaddingHeader       string `inbound:"xpadding-header,omitempty"`
+	XPaddingPlacement    string `inbound:"xpadding-placement,omitempty"`
+	XPaddingMethod       string `inbound:"xpadding-method,omitempty"`
+	UplinkHTTPMethod     string `inbound:"uplink-http-method,omitempty"`
+	SessionPlacement     string `inbound:"session-placement,omitempty"`
+	SessionKey           string `inbound:"session-key,omitempty"`
+	SeqPlacement         string `inbound:"seq-placement,omitempty"`
+	SeqKey               string `inbound:"seq-key,omitempty"`
+	UplinkDataPlacement  string `inbound:"uplink-data-placement,omitempty"`
+	UplinkDataKey        string `inbound:"uplink-data-key,omitempty"`
+	UplinkChunkSize      string `inbound:"uplink-chunk-size,omitempty"`
 	NoSSEHeader          bool   `inbound:"no-sse-header,omitempty"`
 	ScStreamUpServerSecs string `inbound:"sc-stream-up-server-secs,omitempty"`
 	ScMaxBufferedPosts   string `inbound:"sc-max-buffered-posts,omitempty"`
@@ -47,6 +61,19 @@ func (o XHTTPConfig) Build() LC.XHTTPConfig {
 		Host:                 o.Host,
 		Mode:                 o.Mode,
 		NoSSEHeader:          o.NoSSEHeader,
+		XPaddingBytes:        o.XPaddingBytes,
+		XPaddingObfsMode:     o.XPaddingObfsMode,
+		XPaddingKey:          o.XPaddingKey,
+		XPaddingHeader:       o.XPaddingHeader,
+		XPaddingPlacement:    o.XPaddingPlacement,
+		UplinkHTTPMethod:     o.UplinkHTTPMethod,
+		SessionPlacement:     o.SessionPlacement,
+		SessionKey:           o.SessionKey,
+		SeqPlacement:         o.SeqPlacement,
+		SeqKey:               o.SeqKey,
+		UplinkDataPlacement:  o.UplinkDataPlacement,
+		UplinkDataKey:        o.UplinkDataKey,
+		UplinkChunkSize:      o.UplinkChunkSize,
 		ScStreamUpServerSecs: o.ScStreamUpServerSecs,
 		ScMaxBufferedPosts:   o.ScMaxBufferedPosts,
 		ScMaxEachPostBytes:   o.ScMaxEachPostBytes,

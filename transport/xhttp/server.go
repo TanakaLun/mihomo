@@ -1,6 +1,9 @@
 package xhttp
 
 import (
+	"bytes"
+	"encoding/base64"
+	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -25,13 +28,13 @@ type httpServerConn struct {
 	mu      sync.Mutex
 	w       http.ResponseWriter
 	flusher http.Flusher
-	reader  io.Reader
+	reader  io.ReadCloser
 	closed  bool
 	done    chan struct{}
 	once    sync.Once
 }
 
-func newHTTPServerConn(w http.ResponseWriter, r io.Reader) *httpServerConn {
+func newHTTPServerConn(w http.ResponseWriter, r io.ReadCloser) *httpServerConn {
 	flusher, _ := w.(http.Flusher)
 	return &httpServerConn{
 		w:       w,
@@ -67,7 +70,7 @@ func (c *httpServerConn) Close() error {
 		c.mu.Unlock()
 		close(c.done)
 	})
-	return nil
+	return c.reader.Close()
 }
 
 func (c *httpServerConn) Wait() <-chan struct{} {
@@ -98,6 +101,7 @@ type requestHandler struct {
 	connHandler func(net.Conn)
 	httpHandler http.Handler
 
+	xPaddingBytes        Range
 	scMaxEachPostBytes   Range
 	scStreamUpServerSecs Range
 	scMaxBufferedPosts   Range
@@ -107,6 +111,10 @@ type requestHandler struct {
 }
 
 func NewServerHandler(opt ServerOption) (http.Handler, error) {
+	xPaddingBytes, err := opt.Config.GetNormalizedXPaddingBytes()
+	if err != nil {
+		return nil, err
+	}
 	scMaxEachPostBytes, err := opt.Config.GetNormalizedScMaxEachPostBytes()
 	if err != nil {
 		return nil, err
@@ -125,6 +133,7 @@ func NewServerHandler(opt ServerOption) (http.Handler, error) {
 		config:               opt.Config,
 		connHandler:          opt.ConnHandler,
 		httpHandler:          opt.HttpHandler,
+		xPaddingBytes:        xPaddingBytes,
 		scMaxEachPostBytes:   scMaxEachPostBytes,
 		scStreamUpServerSecs: scStreamUpServerSecs,
 		scMaxBufferedPosts:   scMaxBufferedPosts,
@@ -134,7 +143,7 @@ func NewServerHandler(opt ServerOption) (http.Handler, error) {
 	}), nil
 }
 
-func (h *requestHandler) getOrCreateSession(sessionID string) *httpSession {
+func (h *requestHandler) upsertSession(sessionID string) *httpSession {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -160,8 +169,6 @@ func (h *requestHandler) getOrCreateSession(sessionID string) *httpSession {
 
 	return s
 }
-
-
 
 func (h *requestHandler) deleteSession(sessionID string) {
 	h.mu.Lock()
@@ -239,89 +246,51 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rest := strings.TrimPrefix(r.URL.Path, path)
-	parts := splitNonEmpty(rest)
+	h.config.WriteResponseHeader(w, r.Method, r.Header)
+	length := h.xPaddingBytes.Rand()
+	config := XPaddingConfig{Length: length}
 
-	// stream-one: POST /path
-	if r.Method == http.MethodPost && len(parts) == 0 && h.allowStreamOne() {
-		w.Header().Set("X-Accel-Buffering", "no")
-		w.Header().Set("Cache-Control", "no-store")
+	if h.config.XPaddingObfsMode {
+		config.Placement = XPaddingPlacement{
+			Placement: h.config.XPaddingPlacement,
+			Key:       h.config.XPaddingKey,
+			Header:    h.config.XPaddingHeader,
+		}
+		config.Method = PaddingMethod(h.config.XPaddingMethod)
+	} else {
+		config.Placement = XPaddingPlacement{
+			Placement: PlacementHeader,
+			Header:    "X-Padding",
+		}
+	}
+
+	h.config.ApplyXPaddingToResponse(w, config)
+
+	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-
-		httpSC := newHTTPServerConn(w, r.Body)
-		conn := &Conn{
-			writer: httpSC,
-			reader: httpSC,
-		}
-		httputils.SetAddrFromRequest(&conn.NetAddr, r)
-
-		go h.connHandler(N.NewDeadlineConn(conn))
-
-		select {
-		case <-r.Context().Done():
-		case <-httpSC.Wait():
-		}
-
-		_ = conn.Close()
 		return
 	}
 
-	// stream-up/packet-up download: GET /path/{session}
-	if r.Method == http.MethodGet && len(parts) == 1 && h.allowSessionDownload() {
-		sessionID := parts[0]
-		session := h.getOrCreateSession(sessionID)
-		session.markConnected()
-
-		// magic header instructs nginx + apache to not buffer response body
-		w.Header().Set("X-Accel-Buffering", "no")
-		// A web-compliant header telling all middleboxes to disable caching.
-		// Should be able to prevent overloading the cache, or stop CDNs from
-		// teeing the response stream into their cache, causing slowdowns.
-		w.Header().Set("Cache-Control", "no-store")
-		if !h.config.NoSSEHeader {
-			// magic header to make the HTTP middle box consider this as SSE to disable buffer
-			w.Header().Set("Content-Type", "text/event-stream")
-		}
-		w.WriteHeader(http.StatusOK)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-
-		httpSC := newHTTPServerConn(w, r.Body)
-		conn := &Conn{
-			writer: httpSC,
-			reader: session.uploadQueue,
-			onClose: func() {
-				h.deleteSession(sessionID)
-			},
-		}
-		httputils.SetAddrFromRequest(&conn.NetAddr, r)
-
-		go h.connHandler(N.NewDeadlineConn(conn))
-
-		select {
-		case <-r.Context().Done():
-		case <-httpSC.Wait():
-		}
-
-		_ = conn.Close()
+	paddingValue, _ := h.config.ExtractXPaddingFromRequest(r, h.config.XPaddingObfsMode)
+	if !h.config.IsPaddingValid(paddingValue, h.xPaddingBytes.Min, h.xPaddingBytes.Max, PaddingMethod(h.config.XPaddingMethod)) {
+		http.Error(w, "invalid xpadding", http.StatusBadRequest)
 		return
+	}
+	sessionId, seqStr := h.config.ExtractMetaFromRequest(r, path)
+
+	var currentSession *httpSession
+	if sessionId != "" {
+		currentSession = h.upsertSession(sessionId)
 	}
 
 	// stream-up upload: POST /path/{session}
-	if r.Method == http.MethodPost && len(parts) == 1 && h.allowStreamUpUpload() {
-		sessionID := parts[0]
-		session := h.getOrCreateSession(sessionID)
-
+	if r.Method != http.MethodGet && sessionId != "" && seqStr == "" && h.allowStreamUpUpload() {
 		httpSC := newHTTPServerConn(w, r.Body)
-		err := session.uploadQueue.Push(Packet{
+		err := currentSession.uploadQueue.Push(Packet{
 			Reader: httpSC,
 		})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
 
@@ -336,15 +305,16 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 		}
 		w.WriteHeader(http.StatusOK)
+
+		rc := http.NewResponseController(w)
+		_ = rc.EnableFullDuplex() // http1 need to enable full duplex manually
+		_ = rc.Flush()            // force flush the response header
+
 		referrer := r.Header.Get("Referer")
 		if referrer != "" && h.scStreamUpServerSecs.Max > 0 {
 			go func() {
 				for {
-					paddingValue, _ := h.config.RandomPadding()
-					if paddingValue == "" {
-						break
-					}
-					_, err = httpSC.Write([]byte(paddingValue))
+					_, err := httpSC.Write(bytes.Repeat([]byte{'X'}, int(h.xPaddingBytes.Rand())))
 					if err != nil {
 						break
 					}
@@ -363,40 +333,169 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// packet-up upload: POST /path/{session}/{seq}
-	if r.Method == http.MethodPost && len(parts) == 2 && h.allowPacketUpUpload() {
-		sessionID := parts[0]
-		seq, err := strconv.ParseUint(parts[1], 10, 64)
+	if r.Method != http.MethodGet && sessionId != "" && seqStr != "" && h.allowPacketUpUpload() {
+		scMaxEachPostBytes := h.scMaxEachPostBytes.Max
+		dataPlacement := h.config.GetNormalizedUplinkDataPlacement()
+		uplinkDataKey := h.config.UplinkDataKey
+		var headerPayload []byte
+		var err error
+		if dataPlacement == PlacementAuto || dataPlacement == PlacementHeader {
+			var headerPayloadChunks []string
+			for i := 0; true; i++ {
+				chunk := r.Header.Get(fmt.Sprintf("%s-%d", uplinkDataKey, i))
+				if chunk == "" {
+					break
+				}
+				headerPayloadChunks = append(headerPayloadChunks, chunk)
+			}
+			headerPayloadEncoded := strings.Join(headerPayloadChunks, "")
+			headerPayload, err = base64.RawURLEncoding.DecodeString(headerPayloadEncoded)
+			if err != nil {
+				http.Error(w, "invalid base64 in header's payload", http.StatusBadRequest)
+				return
+			}
+		}
+
+		var cookiePayload []byte
+		if dataPlacement == PlacementAuto || dataPlacement == PlacementCookie {
+			var cookiePayloadChunks []string
+			for i := 0; true; i++ {
+				cookieName := fmt.Sprintf("%s_%d", uplinkDataKey, i)
+				if c, _ := r.Cookie(cookieName); c != nil {
+					cookiePayloadChunks = append(cookiePayloadChunks, c.Value)
+				} else {
+					break
+				}
+			}
+			cookiePayloadEncoded := strings.Join(cookiePayloadChunks, "")
+			cookiePayload, err = base64.RawURLEncoding.DecodeString(cookiePayloadEncoded)
+			if err != nil {
+				http.Error(w, "invalid base64 in cookies' payload", http.StatusBadRequest)
+				return
+			}
+		}
+
+		var bodyPayload []byte
+		if dataPlacement == PlacementAuto || dataPlacement == PlacementBody {
+			if r.ContentLength > int64(scMaxEachPostBytes) {
+				http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			bodyPayload, err = io.ReadAll(io.LimitReader(r.Body, int64(scMaxEachPostBytes)+1))
+			if err != nil {
+				http.Error(w, "failed to read body", http.StatusBadRequest)
+				return
+			}
+		}
+
+		var payload []byte
+		switch dataPlacement {
+		case PlacementHeader:
+			payload = headerPayload
+		case PlacementCookie:
+			payload = cookiePayload
+		case PlacementBody:
+			payload = bodyPayload
+		case PlacementAuto:
+			payload = headerPayload
+			payload = append(payload, cookiePayload...)
+			payload = append(payload, bodyPayload...)
+		}
+
+		if len(payload) > h.scMaxEachPostBytes.Max {
+			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		seq, err := strconv.ParseUint(seqStr, 10, 64)
 		if err != nil {
 			http.Error(w, "invalid xhttp seq", http.StatusBadRequest)
 			return
 		}
 
-		session := h.getOrCreateSession(sessionID)
-
-		if r.ContentLength > int64(h.scMaxEachPostBytes.Max) {
-			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-
-		body, err := io.ReadAll(io.LimitReader(r.Body, int64(h.scMaxEachPostBytes.Max)+1))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		err = session.uploadQueue.Push(Packet{
+		err = currentSession.uploadQueue.Push(Packet{
 			Seq:     seq,
-			Payload: body,
+			Payload: payload,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		if len(body) == 0 {
+		if len(payload) == 0 {
+			// Methods without a body are usually cached by default.
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// stream-up/packet-up download: GET /path/{session}
+	if r.Method == http.MethodGet && sessionId != "" && seqStr == "" && h.allowSessionDownload() {
+		currentSession.markConnected()
+
+		// magic header instructs nginx + apache to not buffer response body
+		w.Header().Set("X-Accel-Buffering", "no")
+		// A web-compliant header telling all middleboxes to disable caching.
+		// Should be able to prevent overloading the cache, or stop CDNs from
+		// teeing the response stream into their cache, causing slowdowns.
+		w.Header().Set("Cache-Control", "no-store")
+		if !h.config.NoSSEHeader {
+			// magic header to make the HTTP middle box consider this as SSE to disable buffer
+			w.Header().Set("Content-Type", "text/event-stream")
+		}
+		w.WriteHeader(http.StatusOK)
+
+		rc := http.NewResponseController(w)
+		_ = rc.EnableFullDuplex() // http1 need to enable full duplex manually
+		_ = rc.Flush()            // force flush the response header
+
+		httpSC := newHTTPServerConn(w, r.Body)
+		conn := &Conn{
+			writer: httpSC,
+			reader: currentSession.uploadQueue,
+			onClose: func() {
+				h.deleteSession(sessionId)
+			},
+		}
+		httputils.SetAddrFromRequest(&conn.NetAddr, r)
+
+		go h.connHandler(N.NewDeadlineConn(conn))
+
+		select {
+		case <-r.Context().Done():
+		case <-httpSC.Wait():
+		}
+
+		_ = conn.Close()
+		return
+	}
+
+	// stream-one: POST /path
+	if r.Method != http.MethodGet && sessionId == "" && seqStr == "" && h.allowStreamOne() {
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+
+		rc := http.NewResponseController(w)
+		_ = rc.EnableFullDuplex() // http1 need to enable full duplex manually
+		_ = rc.Flush()            // force flush the response header
+
+		httpSC := newHTTPServerConn(w, r.Body)
+		conn := &Conn{
+			writer: httpSC,
+			reader: httpSC,
+		}
+		httputils.SetAddrFromRequest(&conn.NetAddr, r)
+
+		go h.connHandler(N.NewDeadlineConn(conn))
+
+		select {
+		case <-r.Context().Done():
+		case <-httpSC.Wait():
+		}
+
+		_ = conn.Close()
 		return
 	}
 

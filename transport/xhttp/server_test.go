@@ -78,21 +78,23 @@ func TestServerHandlerModeRestrictions(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
+			config := Config{
+				Path: "/xhttp",
+				Mode: testCase.mode,
+			}
 			handler, err := NewServerHandler(ServerOption{
-				Config: Config{
-					Path: "/xhttp",
-					Mode: testCase.mode,
-				},
+				Config: config,
 				ConnHandler: func(conn net.Conn) {
 					_ = conn.Close()
 				},
 			})
-			if err != nil {
-				panic(err)
-			}
+			assert.NoError(t, err)
 
 			req := httptest.NewRequest(testCase.method, testCase.target, io.NopCloser(http.NoBody))
 			recorder := httptest.NewRecorder()
+
+			err = config.FillStreamRequest(req, "")
+			assert.NoError(t, err)
 
 			handler.ServeHTTP(recorder, req)
 

@@ -2,6 +2,7 @@ package xhttp
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"math/rand"
@@ -11,6 +12,16 @@ import (
 	"github.com/metacubex/http"
 )
 
+const (
+	PlacementQueryInHeader = "queryInHeader"
+	PlacementCookie        = "cookie"
+	PlacementHeader        = "header"
+	PlacementQuery         = "query"
+	PlacementPath          = "path"
+	PlacementBody          = "body"
+	PlacementAuto          = "auto"
+)
+
 type Config struct {
 	Host                 string
 	Path                 string
@@ -18,6 +29,19 @@ type Config struct {
 	Headers              map[string]string
 	NoGRPCHeader         bool
 	XPaddingBytes        string
+	XPaddingObfsMode     bool
+	XPaddingKey          string
+	XPaddingHeader       string
+	XPaddingPlacement    string
+	XPaddingMethod       string
+	UplinkHTTPMethod     string
+	SessionPlacement     string
+	SessionKey           string
+	SeqPlacement         string
+	SeqKey               string
+	UplinkDataPlacement  string
+	UplinkDataKey        string
+	UplinkChunkSize      string
 	NoSSEHeader          bool   // server only
 	ScStreamUpServerSecs string // server only
 	ScMaxBufferedPosts   string // server only
@@ -70,37 +94,92 @@ func (c *Config) NormalizedPath() string {
 	return path
 }
 
-func (c *Config) RequestHeader() http.Header {
+func (c *Config) GetRequestHeader() http.Header {
 	h := http.Header{}
 	for k, v := range c.Headers {
 		h.Set(k, v)
 	}
-
-	if h.Get("User-Agent") == "" {
-		h.Set("User-Agent", "Mozilla/5.0")
-	}
-	if h.Get("Accept") == "" {
-		h.Set("Accept", "*/*")
-	}
-	if h.Get("Accept-Language") == "" {
-		h.Set("Accept-Language", "en-US,en;q=0.9")
-	}
-	if h.Get("Cache-Control") == "" {
-		h.Set("Cache-Control", "no-cache")
-	}
-	if h.Get("Pragma") == "" {
-		h.Set("Pragma", "no-cache")
-	}
-
+	TryDefaultHeadersWith(h, "fetch")
 	return h
 }
 
-func (c *Config) RandomPadding() (string, error) {
-	r, err := ParseRange(c.XPaddingBytes, "100-1000")
-	if err != nil {
-		return "", fmt.Errorf("invalid x-padding-bytes: %w", err)
+func (c *Config) GetRequestHeaderWithPayload(payload []byte, uplinkChunkSize Range) http.Header {
+	header := c.GetRequestHeader()
+
+	key := c.UplinkDataKey
+	encodedData := base64.RawURLEncoding.EncodeToString(payload)
+
+	for i := 0; len(encodedData) > 0; i++ {
+		chunkSize := uplinkChunkSize.Rand()
+		if len(encodedData) < chunkSize {
+			chunkSize = len(encodedData)
+		}
+		chunk := encodedData[:chunkSize]
+		encodedData = encodedData[chunkSize:]
+		headerKey := fmt.Sprintf("%s-%d", key, i)
+		header.Set(headerKey, chunk)
 	}
-	return strings.Repeat("X", r.Rand()), nil
+
+	return header
+}
+
+func (c *Config) GetRequestCookiesWithPayload(payload []byte, uplinkChunkSize Range) []*http.Cookie {
+	cookies := []*http.Cookie{}
+
+	key := c.UplinkDataKey
+	encodedData := base64.RawURLEncoding.EncodeToString(payload)
+
+	for i := 0; len(encodedData) > 0; i++ {
+		chunkSize := uplinkChunkSize.Rand()
+		if len(encodedData) < chunkSize {
+			chunkSize = len(encodedData)
+		}
+		chunk := encodedData[:chunkSize]
+		encodedData = encodedData[chunkSize:]
+		cookieName := fmt.Sprintf("%s_%d", key, i)
+		cookies = append(cookies, &http.Cookie{Name: cookieName, Value: chunk})
+	}
+
+	return cookies
+}
+
+func (c *Config) WriteResponseHeader(writer http.ResponseWriter, requestMethod string, requestHeader http.Header) {
+	if origin := requestHeader.Get("Origin"); origin == "" {
+		writer.Header().Set("Access-Control-Allow-Origin", "*")
+	} else {
+		// Chrome says: The value of the 'Access-Control-Allow-Origin' header in the response must not be the wildcard '*' when the request's credentials mode is 'include'.
+		writer.Header().Set("Access-Control-Allow-Origin", origin)
+	}
+
+	if c.GetNormalizedSessionPlacement() == PlacementCookie ||
+		c.GetNormalizedSeqPlacement() == PlacementCookie ||
+		c.XPaddingPlacement == PlacementCookie ||
+		c.GetNormalizedUplinkDataPlacement() == PlacementCookie {
+		writer.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
+
+	if requestMethod == "OPTIONS" {
+		requestedMethod := requestHeader.Get("Access-Control-Request-Method")
+		if requestedMethod != "" {
+			writer.Header().Set("Access-Control-Allow-Methods", requestedMethod)
+		} else {
+			writer.Header().Set("Access-Control-Allow-Methods", "*")
+		}
+
+		requestedHeaders := requestHeader.Get("Access-Control-Request-Headers")
+		if requestedHeaders == "" {
+			writer.Header().Set("Access-Control-Allow-Headers", "*")
+		} else {
+			writer.Header().Set("Access-Control-Allow-Headers", requestedHeaders)
+		}
+	}
+}
+
+func (c *Config) GetNormalizedUplinkHTTPMethod() string {
+	if c.UplinkHTTPMethod == "" {
+		return "POST"
+	}
+	return c.UplinkHTTPMethod
 }
 
 func (c *Config) GetNormalizedScStreamUpServerSecs() (Range, error) {
@@ -142,6 +221,84 @@ func (c *Config) GetNormalizedScMinPostsIntervalMs() (Range, error) {
 		return Range{}, fmt.Errorf("invalid sc-min-posts-interval-ms: must be greater than zero")
 	}
 	return r, nil
+}
+
+func (c *Config) GetNormalizedUplinkChunkSize() (Range, error) {
+	uplinkChunkSize, err := ParseRange(c.UplinkChunkSize, "")
+	if err != nil {
+		return Range{}, fmt.Errorf("invalid uplink-chunk-size: %w", err)
+	}
+	if uplinkChunkSize.Max == 0 {
+		switch c.GetNormalizedUplinkDataPlacement() {
+		case PlacementCookie:
+			return Range{
+				Min: 2 * 1024, // 2 KiB
+				Max: 3 * 1024, // 3 KiB
+			}, nil
+		case PlacementHeader:
+			return Range{
+				Min: 3 * 1024, // 3 KiB
+				Max: 4 * 1024, // 4 KiB
+			}, nil
+		default:
+			return c.GetNormalizedScMaxEachPostBytes()
+		}
+	} else if uplinkChunkSize.Min < 64 {
+		uplinkChunkSize.Min = 64
+		if uplinkChunkSize.Max < 64 {
+			uplinkChunkSize.Max = 64
+		}
+	}
+	return uplinkChunkSize, nil
+}
+
+func (c *Config) GetNormalizedSessionPlacement() string {
+	if c.SessionPlacement == "" {
+		return PlacementPath
+	}
+	return c.SessionPlacement
+}
+
+func (c *Config) GetNormalizedSeqPlacement() string {
+	if c.SeqPlacement == "" {
+		return PlacementPath
+	}
+	return c.SeqPlacement
+}
+
+func (c *Config) GetNormalizedUplinkDataPlacement() string {
+	if c.UplinkDataPlacement == "" {
+		return PlacementBody
+	}
+	return c.UplinkDataPlacement
+}
+
+func (c *Config) GetNormalizedSessionKey() string {
+	if c.SessionKey != "" {
+		return c.SessionKey
+	}
+	switch c.GetNormalizedSessionPlacement() {
+	case PlacementHeader:
+		return "X-Session"
+	case PlacementCookie, PlacementQuery:
+		return "x_session"
+	default:
+		return ""
+	}
+}
+
+func (c *Config) GetNormalizedSeqKey() string {
+	if c.SeqKey != "" {
+		return c.SeqKey
+	}
+	switch c.GetNormalizedSeqPlacement() {
+	case PlacementHeader:
+		return "X-Seq"
+	case PlacementCookie, PlacementQuery:
+		return "x_seq"
+	default:
+		return ""
+	}
 }
 
 type Range struct {
@@ -231,32 +388,6 @@ func (c *ReuseConfig) ResolveEntryConfig() (Range, Range, Range, error) {
 	return cMaxReuseTimes, hMaxRequestTimes, hMaxReusableSecs, nil
 }
 
-func (c *Config) FillStreamRequest(req *http.Request, sessionID string) error {
-	req.Header = c.RequestHeader()
-
-	paddingValue, err := c.RandomPadding()
-	if err != nil {
-		return err
-	}
-
-	if paddingValue != "" {
-		rawURL := req.URL.String()
-		sep := "?"
-		if strings.Contains(rawURL, "?") {
-			sep = "&"
-		}
-		req.Header.Set("Referer", rawURL+sep+"x_padding="+paddingValue)
-	}
-
-	c.ApplyMetaToRequest(req, sessionID, "")
-
-	if req.Body != nil && !c.NoGRPCHeader {
-		req.Header.Set("Content-Type", "application/grpc")
-	}
-
-	return nil
-}
-
 func appendToPath(path, value string) string {
 	if strings.HasSuffix(path, "/") {
 		return path + value
@@ -264,53 +395,185 @@ func appendToPath(path, value string) string {
 	return path + "/" + value
 }
 
-func (c *Config) ApplyMetaToRequest(req *http.Request, sessionID string, seqStr string) {
-	if sessionID != "" {
-		req.URL.Path = appendToPath(req.URL.Path, sessionID)
+func (c *Config) ApplyMetaToRequest(req *http.Request, sessionId string, seqStr string) {
+	sessionPlacement := c.GetNormalizedSessionPlacement()
+	seqPlacement := c.GetNormalizedSeqPlacement()
+	sessionKey := c.GetNormalizedSessionKey()
+	seqKey := c.GetNormalizedSeqKey()
+
+	if sessionId != "" {
+		switch sessionPlacement {
+		case PlacementPath:
+			req.URL.Path = appendToPath(req.URL.Path, sessionId)
+		case PlacementQuery:
+			q := req.URL.Query()
+			q.Set(sessionKey, sessionId)
+			req.URL.RawQuery = q.Encode()
+		case PlacementHeader:
+			req.Header.Set(sessionKey, sessionId)
+		case PlacementCookie:
+			req.AddCookie(&http.Cookie{Name: sessionKey, Value: sessionId})
+		}
 	}
+
 	if seqStr != "" {
-		req.URL.Path = appendToPath(req.URL.Path, seqStr)
+		switch seqPlacement {
+		case PlacementPath:
+			req.URL.Path = appendToPath(req.URL.Path, seqStr)
+		case PlacementQuery:
+			q := req.URL.Query()
+			q.Set(seqKey, seqStr)
+			req.URL.RawQuery = q.Encode()
+		case PlacementHeader:
+			req.Header.Set(seqKey, seqStr)
+		case PlacementCookie:
+			req.AddCookie(&http.Cookie{Name: seqKey, Value: seqStr})
+		}
 	}
 }
 
-func (c *Config) FillPacketRequest(req *http.Request, sessionID string, seqStr string, payload []byte) error {
-	req.Header = c.RequestHeader()
-	req.Body = io.NopCloser(bytes.NewReader(payload))
-	req.ContentLength = int64(len(payload))
+func (c *Config) ExtractMetaFromRequest(req *http.Request, path string) (sessionId string, seqStr string) {
+	sessionPlacement := c.GetNormalizedSessionPlacement()
+	seqPlacement := c.GetNormalizedSeqPlacement()
+	sessionKey := c.GetNormalizedSessionKey()
+	seqKey := c.GetNormalizedSeqKey()
 
-	paddingValue, err := c.RandomPadding()
+	var subpath []string
+	pathPart := 0
+	if sessionPlacement == PlacementPath || seqPlacement == PlacementPath {
+		subpath = strings.Split(req.URL.Path[len(path):], "/")
+	}
+
+	switch sessionPlacement {
+	case PlacementPath:
+		if len(subpath) > pathPart {
+			sessionId = subpath[pathPart]
+			pathPart += 1
+		}
+	case PlacementQuery:
+		sessionId = req.URL.Query().Get(sessionKey)
+	case PlacementHeader:
+		sessionId = req.Header.Get(sessionKey)
+	case PlacementCookie:
+		if cookie, e := req.Cookie(sessionKey); e == nil {
+			sessionId = cookie.Value
+		}
+	}
+
+	switch seqPlacement {
+	case PlacementPath:
+		if len(subpath) > pathPart {
+			seqStr = subpath[pathPart]
+			pathPart += 1
+		}
+	case PlacementQuery:
+		seqStr = req.URL.Query().Get(seqKey)
+	case PlacementHeader:
+		seqStr = req.Header.Get(seqKey)
+	case PlacementCookie:
+		if cookie, e := req.Cookie(seqKey); e == nil {
+			seqStr = cookie.Value
+		}
+	}
+
+	return sessionId, seqStr
+}
+
+func (c *Config) FillStreamRequest(req *http.Request, sessionID string) error {
+	req.Header = c.GetRequestHeader()
+	xPaddingBytes, err := c.GetNormalizedXPaddingBytes()
 	if err != nil {
 		return err
 	}
-	if paddingValue != "" {
-		rawURL := req.URL.String()
-		sep := "?"
-		if strings.Contains(rawURL, "?") {
-			sep = "&"
+	length := xPaddingBytes.Rand()
+	config := XPaddingConfig{Length: length}
+
+	if c.XPaddingObfsMode {
+		config.Placement = XPaddingPlacement{
+			Placement: c.XPaddingPlacement,
+			Key:       c.XPaddingKey,
+			Header:    c.XPaddingHeader,
+			RawURL:    req.URL.String(),
 		}
-		req.Header.Set("Referer", rawURL+sep+"x_padding="+paddingValue)
+		config.Method = PaddingMethod(c.XPaddingMethod)
+	} else {
+		config.Placement = XPaddingPlacement{
+			Placement: PlacementQueryInHeader,
+			Key:       "x_padding",
+			Header:    "Referer",
+			RawURL:    req.URL.String(),
+		}
 	}
 
-	c.ApplyMetaToRequest(req, sessionID, seqStr)
+	c.ApplyXPaddingToRequest(req, config)
+	c.ApplyMetaToRequest(req, sessionID, "")
+
+	if req.Body != nil && !c.NoGRPCHeader { // stream-up/one
+		req.Header.Set("Content-Type", "application/grpc")
+	}
+
 	return nil
 }
 
 func (c *Config) FillDownloadRequest(req *http.Request, sessionID string) error {
-	req.Header = c.RequestHeader()
+	return c.FillStreamRequest(req, sessionID)
+}
 
-	paddingValue, err := c.RandomPadding()
+func (c *Config) FillPacketRequest(request *http.Request, sessionId string, seqStr string, data []byte) error {
+	dataPlacement := c.GetNormalizedUplinkDataPlacement()
+
+	if dataPlacement == PlacementBody || dataPlacement == PlacementAuto {
+		request.Header = c.GetRequestHeader()
+		request.Body = io.NopCloser(bytes.NewReader(data))
+		request.ContentLength = int64(len(data))
+	} else {
+		request.Body = nil
+		request.ContentLength = 0
+		switch dataPlacement {
+		case PlacementHeader:
+			uplinkChunkSize, err := c.GetNormalizedUplinkChunkSize()
+			if err != nil {
+				return err
+			}
+			request.Header = c.GetRequestHeaderWithPayload(data, uplinkChunkSize)
+		case PlacementCookie:
+			request.Header = c.GetRequestHeader()
+			uplinkChunkSize, err := c.GetNormalizedUplinkChunkSize()
+			if err != nil {
+				return err
+			}
+			for _, cookie := range c.GetRequestCookiesWithPayload(data, uplinkChunkSize) {
+				request.AddCookie(cookie)
+			}
+		}
+	}
+
+	xPaddingBytes, err := c.GetNormalizedXPaddingBytes()
 	if err != nil {
 		return err
 	}
-	if paddingValue != "" {
-		rawURL := req.URL.String()
-		sep := "?"
-		if strings.Contains(rawURL, "?") {
-			sep = "&"
+	length := xPaddingBytes.Rand()
+	config := XPaddingConfig{Length: length}
+
+	if c.XPaddingObfsMode {
+		config.Placement = XPaddingPlacement{
+			Placement: c.XPaddingPlacement,
+			Key:       c.XPaddingKey,
+			Header:    c.XPaddingHeader,
+			RawURL:    request.URL.String(),
 		}
-		req.Header.Set("Referer", rawURL+sep+"x_padding="+paddingValue)
+		config.Method = PaddingMethod(c.XPaddingMethod)
+	} else {
+		config.Placement = XPaddingPlacement{
+			Placement: PlacementQueryInHeader,
+			Key:       "x_padding",
+			Header:    "Referer",
+			RawURL:    request.URL.String(),
+		}
 	}
 
-	c.ApplyMetaToRequest(req, sessionID, "")
+	c.ApplyXPaddingToRequest(request, config)
+	c.ApplyMetaToRequest(request, sessionId, seqStr)
+
 	return nil
 }

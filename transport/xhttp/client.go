@@ -21,7 +21,6 @@ import (
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/quic-go/http3"
 	"github.com/metacubex/tls"
-	"golang.org/x/sync/semaphore"
 )
 
 // ConnIdleTimeout defines the maximum time an idle TCP session can survive in the tunnel,
@@ -115,7 +114,7 @@ func (c *PacketUpWriter) write(b []byte) (int, error) {
 		Path:   c.cfg.NormalizedPath(),
 	}
 
-	req, err := http.NewRequestWithContext(c.ctx, http.MethodPost, u.String(), nil)
+	req, err := http.NewRequestWithContext(c.ctx, c.cfg.GetNormalizedUplinkHTTPMethod(), u.String(), nil)
 	if err != nil {
 		return 0, err
 	}
@@ -177,12 +176,7 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 		}
 	}
 	if len(alpn) == 1 && alpn[0] == "http/1.1" { // `alpn: [http/1.1]` means using http/1.1 mode
-		w := semaphore.NewWeighted(20) // limit concurrent dialing to avoid WSAECONNREFUSED on Windows
 		dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if err := w.Acquire(ctx, 1); err != nil {
-				return nil, err
-			}
-			defer w.Release(1)
 			raw, err := dialRaw(ctx)
 			if err != nil {
 				return nil, err
@@ -359,7 +353,7 @@ func (c *Client) DialStreamOne() (net.Conn, error) {
 		},
 	})
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), pr)
+	req, err := http.NewRequestWithContext(ctx, c.cfg.GetNormalizedUplinkHTTPMethod(), requestURL.String(), pr)
 	if err != nil {
 		_ = pr.Close()
 		_ = pw.Close()
@@ -470,7 +464,7 @@ func (c *Client) DialStreamUp() (net.Conn, error) {
 
 	uploadReq, err := http.NewRequestWithContext(
 		c.ctx,
-		http.MethodPost,
+		c.cfg.GetNormalizedUplinkHTTPMethod(),
 		streamURL.String(),
 		pr,
 	)
