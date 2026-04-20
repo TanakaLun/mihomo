@@ -316,7 +316,7 @@ func (v *Vless) dialContext(ctx context.Context) (c net.Conn, err error) {
 	case "grpc": // gun transport
 		return v.gunClient.Dial()
 	case "xhttp":
-		return v.xhttpClient.Dial()
+		return v.xhttpClient.Dial(ctx)
 	default:
 	}
 	return v.dialer.DialContext(ctx, "tcp", v.addr)
