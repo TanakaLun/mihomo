@@ -2,32 +2,11 @@ package utils
 
 import (
 	"crypto/md5"
+	"crypto/rand"
 	"crypto/sha1"
-	"unsafe"
 
 	"github.com/gofrs/uuid/v5"
-	"github.com/metacubex/randv2"
 )
-
-func UnsafeRandRead(p []byte) {
-	for len(p) > 0 {
-		v := randv2.Uint64()
-		if v == 0 {
-			continue
-		}
-		i := copy(p, (*[8]byte)(unsafe.Pointer(&v))[:])
-		p = p[i:]
-	}
-}
-
-type unsafeRandReader struct{}
-
-func (r *unsafeRandReader) Read(p []byte) (n int, err error) {
-	UnsafeRandRead(p)
-	return len(p), nil
-}
-
-var UnsafeRandReader = (*unsafeRandReader)(nil)
 
 // NewUUIDV3 returns a UUID based on the MD5 hash of the namespace UUID and name.
 func NewUUIDV3(ns uuid.UUID, name string) (u uuid.UUID) {
@@ -45,7 +24,7 @@ func NewUUIDV3(ns uuid.UUID, name string) (u uuid.UUID) {
 //
 // Version 4 UUIDs contain 122 bits of random data.
 func NewUUIDV4() (u uuid.UUID) {
-	UnsafeRandRead(u[:])
+	rand.Read(u[:])
 	u.SetVersion(uuid.V4)
 	u.SetVariant(uuid.VariantRFC9562)
 	return u

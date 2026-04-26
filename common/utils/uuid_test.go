@@ -1,22 +1,11 @@
 package utils
 
 import (
-	"bytes"
 	"reflect"
 	"testing"
 
 	"github.com/gofrs/uuid/v5"
 )
-
-func TestUnsafeRandRead(t *testing.T) {
-	for i := 1; i < 100; i++ {
-		data := make([]byte, i)
-		UnsafeRandRead(data)
-		if bytes.Equal(data, make([]byte, i)) {
-			t.Fatal("UnsafeRandRead should not return all zero bytes")
-		}
-	}
-}
 
 func TestUUIDMap(t *testing.T) {
 	type args struct {
