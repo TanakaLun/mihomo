@@ -115,6 +115,13 @@ jobs:
                     -w -s -buildid=" \
           -o mihomo-android-arm64
           
+    - name: Strip binary
+      run: |
+        NDK_PATH=${{ steps.setup-ndk.outputs.ndk-path }}
+        STRIP_PATH="${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+        $STRIP_PATH --strip-all mihomo-android-arm64
+        echo "Binary size after strip: $(du -h mihomo-android-arm64 | cut -f1)"
+
     - name: Compress binary
       run: |
         gzip -c mihomo-android-arm64 > mihomo-android-arm64-${VERSION}.gz
