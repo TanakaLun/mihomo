@@ -107,6 +107,13 @@ func ParseListener(mapping map[string]any) (C.InboundListener, error) {
 			return nil, err
 		}
 		listener, err = IN.NewHysteria2(hysteria2Option)
+	case "hysteria2-realm":
+		hysteria2RealmOption := IN.DefaultHysteria2RealmServerOption()
+		err = decoder.Decode(mapping, hysteria2RealmOption)
+		if err != nil {
+			return nil, err
+		}
+		listener, err = IN.NewHysteria2RealmServer(hysteria2RealmOption)
 	case "tuic":
 		tuicOption := &IN.TuicOption{
 			MaxIdleTime:           15000,

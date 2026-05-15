@@ -90,7 +90,7 @@ func findProcessName(network string, ip netip.Addr, srcPort int) (uint32, string
 	return uid, pp, err
 }
 
-func resolveSocketByNetlink(network string, ip netip.Addr, srcPort int) (uint32, uint32, error) {
+func resolveSocketByNetlink(network string, ip netip.Addr, srcPort int) (uid uint32, inode uint32, err error) {
 	request := &inetDiagRequest{
 		States: 0xffffffff,
 		Cookie: [2]uint32{0xffffffff, 0xffffffff},
@@ -133,6 +133,7 @@ func resolveSocketByNetlink(network string, ip netip.Addr, srcPort int) (uint32,
 		return 0, 0, err
 	}
 
+	err = ErrNotFound
 	for _, msg := range messages {
 		if len(msg.Data) < inetDiagResponseSize {
 			continue
@@ -140,10 +141,37 @@ func resolveSocketByNetlink(network string, ip netip.Addr, srcPort int) (uint32,
 
 		response := (*inetDiagResponse)(unsafe.Pointer(&msg.Data[0]))
 
-		return response.UID, response.INode, nil
+		// always set to allow fallback when check fails
+		uid, inode, err = response.UID, response.INode, nil
+
+		// check src port
+		if binary.BigEndian.Uint16(response.SrcPort[:]) != uint16(srcPort) {
+			continue
+		}
+
+		// check src IP
+		var src netip.Addr
+		switch response.Family {
+		case unix.AF_INET:
+			var a [4]byte
+			copy(a[:], response.Src[:4])
+			src = netip.AddrFrom4(a)
+		case unix.AF_INET6:
+			var a [16]byte
+			copy(a[:], response.Src[:])
+			src = netip.AddrFrom16(a).Unmap()
+		default:
+			continue
+		}
+		if src != ip.Unmap() {
+			continue
+		}
+
+		// this is the one we want
+		break
 	}
 
-	return 0, 0, ErrNotFound
+	return
 }
 
 func resolveProcessNameByProcSearch(inode, uid uint32) (string, error) {

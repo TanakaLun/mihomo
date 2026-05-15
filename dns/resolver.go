@@ -479,6 +479,14 @@ func (rs Resolvers) ResetConnection() {
 	rs.DirectResolver.ResetConnection()
 }
 
+func NewResolverFromClient(client dnsClient) *Resolver {
+	return &Resolver{
+		ipv6:  true,
+		main:  []dnsClient{client},
+		cache: Config{}.newCache(),
+	}
+}
+
 func NewResolver(config Config) (rs Resolvers) {
 	defaultResolver := &Resolver{
 		main:        transform(config.Default, nil),

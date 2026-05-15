@@ -600,7 +600,7 @@ func (w *WireGuard) ResolveUDP(ctx context.Context, metadata *C.Metadata) error 
 		if w.resolver != nil {
 			r = w.resolver
 		}
-		ip, err := resolver.ResolveIPWithResolver(ctx, metadata.Host, r)
+		ip, err := resolveIPWithResolver(ctx, metadata.Host, w.prefer, r)
 		if err != nil {
 			return fmt.Errorf("can't resolve ip: %w", err)
 		}
