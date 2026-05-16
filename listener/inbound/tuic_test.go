@@ -70,6 +70,7 @@ func testInboundTuic0(t *testing.T, inboundOptions inbound.TuicOption, outboundO
 	outboundOptions.Server = addrPort.Addr().String()
 	outboundOptions.Port = int(addrPort.Port())
 	outboundOptions.DialerForAPI = tunnel.NewDialer()
+	outboundOptions.TunnelForAPI = tunnel
 
 	out, err := outbound.NewTuic(outboundOptions)
 	if !assert.NoError(t, err) {

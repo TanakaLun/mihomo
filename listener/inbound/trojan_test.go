@@ -44,6 +44,7 @@ func testInboundTrojan(t *testing.T, inboundOptions inbound.TrojanOption, outbou
 	outboundOptions.Port = int(addrPort.Port())
 	outboundOptions.Password = userUUID
 	outboundOptions.DialerForAPI = tunnel.NewDialer()
+	outboundOptions.TunnelForAPI = tunnel
 
 	out, err := outbound.NewTrojan(outboundOptions)
 	if !assert.NoError(t, err) {

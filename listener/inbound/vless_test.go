@@ -45,6 +45,7 @@ func testInboundVless(t *testing.T, inboundOptions inbound.VlessOption, outbound
 	outboundOptions.Port = int(addrPort.Port())
 	outboundOptions.UUID = userUUID
 	outboundOptions.DialerForAPI = tunnel.NewDialer()
+	outboundOptions.TunnelForAPI = tunnel
 
 	out, err := outbound.NewVless(outboundOptions)
 	if !assert.NoError(t, err) {

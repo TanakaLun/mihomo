@@ -354,6 +354,9 @@ func NewHttpTestTunnel() *TestTunnel {
 			}
 			<-c.ch
 		},
+		HandleUDPPacketFn: func(packet C.UDPPacket, metadata *C.Metadata) {
+			// TODO
+		},
 		CloseFn:            ln.Close,
 		DoSequentialTestFn: sequentialTestFn,
 		DoConcurrentTestFn: concurrentTestFn,

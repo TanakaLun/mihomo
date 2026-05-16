@@ -238,6 +238,7 @@ func testInboundMieruTCP(t *testing.T, handshakeMode string) {
 		HandshakeMode: handshakeMode,
 	}
 	outboundOptions.DialerForAPI = tunnel.NewDialer()
+	outboundOptions.TunnelForAPI = tunnel
 	out, err := outbound.NewMieru(outboundOptions)
 	if !assert.NoError(t, err) {
 		return
