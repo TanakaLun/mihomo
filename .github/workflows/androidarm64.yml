@@ -82,7 +82,7 @@ jobs:
 
     - name: Set variables
       run: |
-        VERSION="TanakaLun-$(git rev-parse --short HEAD)"
+        VERSION="mihomo-${{ github.ref }}-TanakaLun-$(git rev-parse --short HEAD)"
         VERSION="${VERSION//\//-}"
         echo "VERSION=${VERSION}" >> $GITHUB_ENV
         echo "BUILDTIME=$(date)" >> $GITHUB_ENV
