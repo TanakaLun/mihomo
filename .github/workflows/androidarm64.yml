@@ -82,7 +82,9 @@ jobs:
 
     - name: Set variables
       run: |
-        VERSION="mihomo-${{ github.ref }}-TanakaLun-$(git rev-parse --short HEAD)"
+        BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+        SHORT_HASH=$(git rev-parse --short HEAD)
+        VERSION="${BRANCH_NAME}-TanakaLun-${SHORT_HASH}"
         VERSION="${VERSION//\//-}"
         echo "VERSION=${VERSION}" >> $GITHUB_ENV
         echo "BUILDTIME=$(date)" >> $GITHUB_ENV
@@ -113,25 +115,25 @@ jobs:
           -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' \
                     -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' \
                     -w -s -buildid=" \
-          -o mihomo-android-arm64
-          
+          -o mihomo
+
     - name: Strip binary
       run: |
         NDK_PATH=${{ steps.setup-ndk.outputs.ndk-path }}
         STRIP_PATH="${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
-        $STRIP_PATH --strip-all mihomo-android-arm64
-        echo "Binary size after strip: $(du -h mihomo-android-arm64 | cut -f1)"
+        $STRIP_PATH --strip-all mihomo
+        echo "Binary size after strip: $(du -h mihomo | cut -f1)"
 
     - name: Compress binary
       run: |
-        gzip -c mihomo-android-arm64 > mihomo-android-arm64-${VERSION}.gz
+        gzip -c mihomo > mihomo-${VERSION}.gz
 
     - name: Upload artifact
       uses: actions/upload-artifact@v7
       with:
         name: android-arm64
         path: |
-          mihomo-android-arm64*.gz
+          mihomo-*.gz
           version.txt
 
     - name: Save version
