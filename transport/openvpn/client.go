@@ -14,7 +14,10 @@ import (
 	"github.com/metacubex/tls"
 )
 
-const defaultHandshakeTimeout = 30 * time.Second
+const (
+	DefaultHandshakeTimeout = 30 * time.Second
+	ControlRetransmitDelay  = time.Second
+)
 
 type Client struct {
 	config *ClientConfig
@@ -35,9 +38,13 @@ func NewClient(config *ClientConfig, io PacketIO) (*Client, error) {
 	if io == nil {
 		return nil, errors.New("nil openvpn packet io")
 	}
-	crypt, err := NewTLSCrypt(config.TLSCryptKey, true)
-	if err != nil {
-		return nil, err
+	var crypt *TLSCrypt
+	if len(config.TLSCryptKey) > 0 {
+		var err error
+		crypt, err = NewTLSCrypt(config.TLSCryptKey, true)
+		if err != nil {
+			return nil, err
+		}
 	}
 	local, err := NewSessionID()
 	if err != nil {
@@ -60,7 +67,7 @@ func (c *Client) Handshake(ctx context.Context) (*PushReply, error) {
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, defaultHandshakeTimeout)
+		ctx, cancel = context.WithTimeout(ctx, DefaultHandshakeTimeout)
 		defer cancel()
 	}
 	if err := c.control.SendReset(ctx); err != nil {
@@ -84,8 +91,8 @@ func (c *Client) Handshake(ctx context.Context) (*PushReply, error) {
 	}
 
 	clientRecord, err := NewClientKeyMethod2Record(
-		InstallScriptOptionsString(c.config.Proto, c.config.Cipher, c.config.Auth),
-		InstallScriptPeerInfo(c.config.Cipher),
+		InstallScriptOptionsString(c.config.Proto, c.config.Cipher, c.config.Auth, c.config.CompLZO),
+		InstallScriptPeerInfo(c.config.Cipher, c.config.CompLZO),
 		strings.TrimSpace(c.config.Username),
 		c.config.Password,
 	)
@@ -119,7 +126,7 @@ func (c *Client) Handshake(ctx context.Context) (*PushReply, error) {
 		return nil, err
 	}
 	c.push = push
-	c.data, err = NewDataChannel(keys, c.config.Cipher, push.PeerID)
+	c.data, err = NewDataChannel(keys, c.config.Cipher, c.config.Auth, push.PeerID, c.config.CompLZO)
 	if err != nil {
 		return nil, err
 	}
@@ -168,10 +175,24 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) waitServerReset(ctx context.Context) error {
+	retransmits := 0
 	for {
-		packet, err := c.control.Read(ctx)
+		readCtx := ctx
+		cancel := func() {}
+		if c.config.Proto == ProtoUDP {
+			readCtx, cancel = context.WithTimeout(ctx, ControlRetransmitDelay)
+		}
+		packet, err := c.control.Read(readCtx)
+		cancel()
 		if err != nil {
-			return fmt.Errorf("read hard reset response: %w", err)
+			if c.config.Proto == ProtoUDP && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				if err := c.control.RetransmitPending(ctx); err != nil {
+					return fmt.Errorf("retransmit hard reset: %w", err)
+				}
+				retransmits++
+				continue
+			}
+			return fmt.Errorf("read hard reset response after %d retransmits: %w", retransmits, err)
 		}
 		switch packet.Opcode {
 		case PControlHardResetServerV2:
