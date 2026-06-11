@@ -1459,7 +1459,7 @@ proxy-groups:
     proxies:
       - Proxy
       - DIRECT
-    # empty-fallback: COMPATIBLE # 设置当组为空时的回退proxy
+    # empty-fallback: COMPATIBLE # 设置当组为空时的回退proxy（这里不支持填写代理组，只支持填写proxy名称）
 
 # Mihomo 格式的节点或支持 *ray 的分享格式
 proxy-providers:
@@ -1874,6 +1874,8 @@ listeners:
     #   uplink-http-method: POST # Available: POST, PUT, PATCH, DELETE
     #   session-placement: path # Available: path, query, cookie, header
     #   session-key: ""
+    #   session-table: "" # Available: "", "uuid", "ALPHABET", "Alphabet", "BASE36", "Base62", "HEX", "alphabet", "base36", "hex", "number"
+    #   session-length: "16-32" # 起始值不可为 0，总的 id 空间必须大于 21 亿，仅当session-table不为空或uuid时生效
     #   seq-placement: path # Available: path, query, cookie, header
     #   seq-key: ""
     #   uplink-data-placement: body # Available: body, cookie, header
