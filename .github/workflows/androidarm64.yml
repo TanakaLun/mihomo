@@ -84,7 +84,7 @@ jobs:
       run: |
         BRANCH_NAME="${GITHUB_REF#refs/heads/}"
         SHORT_HASH=$(git rev-parse --short HEAD)
-        VERSION="mihomo-TanakaLun-${SHORT_HASH}"
+        VERSION="TanakaLun-${SHORT_HASH}"
         VERSION="${VERSION//\//-}"
         echo "VERSION=${VERSION}" >> $GITHUB_ENV
         echo "BUILDTIME=$(date)" >> $GITHUB_ENV
