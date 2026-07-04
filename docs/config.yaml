@@ -338,18 +338,20 @@ dns:
 
   # 配置 fallback 使用条件
   # fallback-filter:
-  #   geoip: true # 配置是否使用 geoip
-  #   geoip-code: CN # 当 nameserver 域名的 IP 查询 geoip 库为 CN 时，不使用 fallback 中的 DNS 查询结果
-  #   配置强制 fallback，优先于 IP 判断，具体分类自行查看 geosite 库
-  #   geosite:
-  #     - gfw
-  #   如果不匹配 ipcidr 则使用 nameservers 中的结果
-  #   ipcidr:
+  #   geoip: true    # 配置是否使用 geoip
+  #   geoip-code: CN # 当 nameserver 解析出域名的 IP 查询 geoip 库为 CN 时， 使用 nameserver 中的 DNS 查询结果
+  #   ipcidr:        # 当 nameserver 解析出域名的 IP 匹配 ipcidr 时，使用 fallback 中的 DNS 查询结果
   #     - 240.0.0.0/4
-  #   domain:
+  #     - 0.0.0.0/32
+  #     - 127.0.0.1/32
+  #     - 100.64.0.0/10
+  #   domain:        # 匹配到这些域名，会直接使用 fallback 解析，不去使用 nameserver
   #     - '+.google.com'
   #     - '+.facebook.com'
   #     - '+.youtube.com'
+  #   geosite:       # 匹配到这些域名，会直接使用 fallback 解析，不去使用 nameserver（已废弃，请使用 nameserver-policy）
+  #     - gfw
+  # fallback-lazy-query: false # 默认值为 false ，如果为 true 会先判断来自 nameserver 的结果是否满足 fallback-filter 后再发起查询
 
   # 配置查询域名使用的 DNS 服务器
   nameserver-policy:
@@ -406,8 +408,23 @@ proxies: # socks5
     # udp: true # support UDP on version 3/4/5
     # reuse: false # v4/5 only
     # obfs-opts:
-    # mode: http # or tls
-    # host: bing.com
+    #   mode: http # or tls/shadow-tls
+
+  - name: "snell-shadow-tls"
+    type: snell
+    server: server
+    port: 44046
+    psk: yourpsk
+    # version: 4 # support 1/2/3/4/5
+    # udp: true # support UDP on version 3/4/5
+    # reuse: false # v4/5 only
+    # client-fingerprint: chrome
+    obfs-opts:
+      mode: shadow-tls
+      host: bing.com
+      password: "shadow_tls_password"
+      version: 2 # support 1/2/3
+      alpn: ["h2","http/1.1"]
 
   # Shadowsocks
   # cipher支持:
@@ -1202,8 +1219,12 @@ proxies: # socks5
     #   00000000000000000000000000000000
     #   ...
     #   -----END OpenVPN Static key V1-----
+    # peer-info: # 透传给服务端的 peer-info 键值对，追加在内置 IV_VER/IV_PROTO/IV_CIPHERS 之后；用于服务端基于 peer-info 做准入决策
+    #   IV_HWADDR: "52:54:00:ff:72:87"
+    #   UV_DEVICE_ID: "laptop-001"
     # ping: 10 # 默认值为 0
     # ping-restart: 60 # 默认值为 0
+    # handshake-timeout: 30 # 单位为秒；配置后握手时不受外层连接超时影响；默认值为 0，表示仅使用外层连接超时
     # mtu: 1500
     udp: true
     # 一个出站代理的标识。当值不为空时，将使用指定的 proxy 发出连接
@@ -1227,6 +1248,7 @@ proxies: # socks5
     # remote-dns-resolve: true # 强制 dns 远程解析，默认值为 false
     # dns: [ 1.1.1.1, 8.8.8.8 ] # 仅在 remote-dns-resolve 为 true 时生效
     # congestion-controller: bbr # 默认不开启
+    # handshake-timeout: 30 # 单位为秒；配置后握手时不受外层连接超时影响；默认值为 0，表示仅使用外层连接超时
 
   # masque-h3-l4proxy
   - name: "masque-h3-l4proxy"
@@ -1242,6 +1264,7 @@ proxies: # socks5
     # remote-dns-resolve: true # 强制 dns 远程解析，默认值为 false
     # dns: [ tls://1.1.1.1, tls://1.0.0.1 ] # 仅在 remote-dns-resolve 为 true 时生效
     # congestion-controller: bbr # 默认不开启
+    # handshake-timeout: 30 # 单位为秒；配置后握手时不受外层连接超时影响；默认值为 0，表示仅使用外层连接超时
 
   # masque-h2
   - name: "masque-h2"
@@ -1259,6 +1282,7 @@ proxies: # socks5
     # dialer-proxy: "ss1"
     # remote-dns-resolve: true # 强制 dns 远程解析，默认值为 false
     # dns: [ 1.1.1.1, 8.8.8.8 ] # 仅在 remote-dns-resolve 为 true 时生效
+    # handshake-timeout: 30 # 单位为秒；配置后握手时不受外层连接超时影响；默认值为 0，表示仅使用外层连接超时
 
   # tuic
   - name: tuic
@@ -1779,6 +1803,15 @@ listeners:
     # obfs-opts:
     #   mode: http # 可选：http / tls
     #   host: bing.com
+    # shadow-tls:
+    #   enable: false # 设置为true时开启
+    #   version: 3 # 支持v1/v2/v3
+    #   password: password # v2设置项
+    #   users: # v3设置项
+    #     - name: 1
+    #       password: password
+    #   handshake:
+    #     dest: test.com:443
     # rule: sub-rule-name1
     # proxy: proxy
 

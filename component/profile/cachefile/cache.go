@@ -78,7 +78,7 @@ func (c *CacheFile) Close() error {
 }
 
 func initCache() {
-	options := bbolt.Options{Timeout: time.Second}
+	options := bbolt.Options{Timeout: time.Second, NoStatistics: true}
 	db, err := bbolt.Open(C.Path.Cache(), fileMode, &options)
 	switch err {
 	case bbolt.ErrInvalid, bbolt.ErrChecksum, bbolt.ErrVersionMismatch:

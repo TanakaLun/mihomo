@@ -17,8 +17,7 @@ import (
 )
 
 const (
-	DefaultHandshakeTimeout = 30 * time.Second
-	ControlRetransmitDelay  = time.Second
+	ControlRetransmitDelay = time.Second
 )
 
 type Client struct {
@@ -76,11 +75,6 @@ func (c *Client) Handshake(ctx context.Context) (*PushReply, error) {
 	if c == nil {
 		return nil, errors.New("nil openvpn client")
 	}
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultHandshakeTimeout)
-		defer cancel()
-	}
 	if err := c.control.SendReset(ctx); err != nil {
 		return nil, fmt.Errorf("send hard reset: %w", err)
 	}
@@ -103,7 +97,7 @@ func (c *Client) Handshake(ctx context.Context) (*PushReply, error) {
 
 	clientRecord, err := NewClientKeyMethod2Record(
 		InstallScriptOptionsString(c.config.Proto, c.config.Cipher, c.config.Auth, c.config.CompLZO),
-		InstallScriptPeerInfo(c.config.Cipher, c.config.CompLZO),
+		InstallScriptPeerInfo(c.config.Cipher, c.config.CompLZO, c.config.PeerInfo),
 		strings.TrimSpace(c.config.Username),
 		c.config.Password,
 	)

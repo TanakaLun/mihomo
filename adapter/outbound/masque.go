@@ -12,7 +12,6 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/atomic"
@@ -31,6 +30,7 @@ import (
 	wireguard "github.com/metacubex/sing-wireguard"
 	M "github.com/metacubex/sing/common/metadata"
 	"github.com/metacubex/tls"
+	"golang.org/x/sync/semaphore"
 )
 
 type Masque struct {
@@ -45,7 +45,7 @@ type Masque struct {
 
 	runCtx    context.Context
 	runCancel context.CancelFunc
-	runMutex  sync.Mutex
+	runLock   *semaphore.Weighted
 	running   atomic.Bool
 	runDevice atomic.Bool
 
@@ -54,19 +54,20 @@ type Masque struct {
 
 type MasqueOption struct {
 	BasicOption
-	Name           string `proxy:"name"`
-	Server         string `proxy:"server"`
-	Port           int    `proxy:"port"`
-	PrivateKey     string `proxy:"private-key"`
-	PublicKey      string `proxy:"public-key"`
-	Ip             string `proxy:"ip,omitempty"`
-	Ipv6           string `proxy:"ipv6,omitempty"`
-	URI            string `proxy:"uri,omitempty"`
-	SNI            string `proxy:"sni,omitempty"`
-	MTU            int    `proxy:"mtu,omitempty"`
-	UDP            bool   `proxy:"udp,omitempty"`
-	SkipCertVerify bool   `proxy:"skip-cert-verify,omitempty"`
-	Network        string `proxy:"network,omitempty"`
+	Name             string `proxy:"name"`
+	Server           string `proxy:"server"`
+	Port             int    `proxy:"port"`
+	PrivateKey       string `proxy:"private-key"`
+	PublicKey        string `proxy:"public-key"`
+	Ip               string `proxy:"ip,omitempty"`
+	Ipv6             string `proxy:"ipv6,omitempty"`
+	URI              string `proxy:"uri,omitempty"`
+	SNI              string `proxy:"sni,omitempty"`
+	MTU              int    `proxy:"mtu,omitempty"`
+	UDP              bool   `proxy:"udp,omitempty"`
+	HandshakeTimeout int    `proxy:"handshake-timeout,omitempty"`
+	SkipCertVerify   bool   `proxy:"skip-cert-verify,omitempty"`
+	Network          string `proxy:"network,omitempty"`
 
 	CongestionController string `proxy:"congestion-controller,omitempty"`
 	CWND                 int    `proxy:"cwnd,omitempty"`
@@ -105,6 +106,9 @@ func (option MasqueOption) Prefixes() ([]netip.Prefix, error) {
 }
 
 func NewMasque(option MasqueOption) (*Masque, error) {
+	if option.HandshakeTimeout < 0 {
+		return nil, errors.New("masque handshake timeout must be non-negative")
+	}
 	outbound := &Masque{
 		Base: NewBase(BaseOption{
 			Name:         option.Name,
@@ -116,6 +120,7 @@ func NewMasque(option MasqueOption) (*Masque, error) {
 			RoutingMark:  option.RoutingMark,
 			Prefer:       option.IPVersion,
 		}),
+		runLock: semaphore.NewWeighted(1),
 	}
 	outbound.dialer = option.NewDialer(outbound.DialOptions())
 
@@ -269,8 +274,23 @@ func (w *Masque) run(ctx context.Context) error {
 	if w.running.Load() {
 		return nil
 	}
-	w.runMutex.Lock()
-	defer w.runMutex.Unlock()
+	runCtx, cancel := context.WithCancel(ctx)
+	stop := contextutils.AfterFunc(w.runCtx, cancel)
+	defer func() {
+		stop()
+		cancel()
+	}()
+
+	if err := w.runLock.Acquire(runCtx, 1); err != nil {
+		return err
+	}
+	releaseRunLock := true
+	defer func() {
+		if releaseRunLock {
+			w.runLock.Release(1)
+		}
+	}()
+
 	// double-check like sync.Once
 	if w.running.Load() {
 		return nil
@@ -280,6 +300,31 @@ func (w *Masque) run(ctx context.Context) error {
 		return w.runCtx.Err()
 	}
 
+	if w.option.HandshakeTimeout > 0 {
+		resultCh := make(chan error, 1)
+		releaseRunLock = false
+		go func() {
+			defer w.runLock.Release(1)
+
+			handshakeTimeout := time.Duration(w.option.HandshakeTimeout) * time.Second
+			handshakeCtx, handshakeCancel := context.WithTimeout(w.runCtx, handshakeTimeout)
+			defer handshakeCancel()
+
+			resultCh <- w.startLocked(handshakeCtx)
+		}()
+
+		select {
+		case err := <-resultCh:
+			return err
+		case <-runCtx.Done():
+			return runCtx.Err()
+		}
+	}
+
+	return w.startLocked(runCtx)
+}
+
+func (w *Masque) startLocked(ctx context.Context) error {
 	if !w.runDevice.Load() {
 		err := w.tunDevice.Start()
 		if err != nil {
@@ -300,6 +345,9 @@ func (w *Masque) run(ctx context.Context) error {
 	} else {
 		var quicConn *quic.Conn
 		pc, quicConn, err = w.dialQuic(ctx)
+		if err != nil {
+			return err
+		}
 
 		closer, ipConn, err = masque.ConnectTunnel(ctx, quicConn, w.uri)
 		if err != nil {

@@ -129,7 +129,7 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 	handleTcpFn := func(conn net.Conn, addr socks5.Addr, _additions ...inbound.Addition) error {
 		//newAdditions := additions
 		//if len(_additions) > 0 {
-		//	newAdditions = slices.Clone(additions)
+		//	newAdditions = slices.Clip(additions) // force the subsequent `append()` to copy the slice
 		//	newAdditions = append(newAdditions, _additions...)
 		//}
 		//conn, metadata := inbound.NewSocket(addr, conn, C.TUIC, newAdditions...)
@@ -140,7 +140,7 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 	handleUdpFn := func(addr socks5.Addr, packet C.UDPPacket, _additions ...inbound.Addition) error {
 		newAdditions := additions
 		if len(_additions) > 0 {
-			newAdditions = slices.Clone(additions)
+			newAdditions = slices.Clip(additions) // force the subsequent `append()` to copy the slice
 			newAdditions = append(newAdditions, _additions...)
 		}
 		tunnel.HandleUDPPacket(inbound.NewPacket(addr, packet, C.TUIC, newAdditions...))
