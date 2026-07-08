@@ -43,9 +43,9 @@ jobs:
         chmod -R +w ${SING_TUN_DIR}
         cd ${SING_TUN_DIR}
         
-        wget -O sing-tun.patch https://raw.githubusercontent.com/TanakaLun/mihomo/Alpha/.github/patch/sing-tun.patch
+        wget -O sing-tun.patch https://raw.githubusercontent.com/TanakaLun/mihomo/cb49c90be1dde6e219a4a08dff59239b5836559f/.github/patch/sing-tun.patch
         
-        if grep -q 'r.ip6tablesPath = "/system/bin/ip6tables"' redirect_linux.go 2>/dev/null; then
+        if grep -q "if len(r.tunOptions.Inet6Address) > 0 && runtime.GOOS == \"android\"" redirect_linux.go 2>/dev/null; then
           echo "Patch already applied (IPv6 Android code found), skipping..."
           exit 0
         fi
@@ -131,10 +131,6 @@ jobs:
     - name: Upload artifact
       uses: actions/upload-artifact@v7
       with:
-        name: android-arm64
+        name: mihomo-android-arm64
         path: |
           mihomo-*.gz
-          version.txt
-
-    - name: Save version
-      run: echo ${VERSION} > version.txt
