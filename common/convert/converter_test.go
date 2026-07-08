@@ -40,6 +40,37 @@ func TestConvertsV2Ray_normal(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestConvertsV2Ray_hysteria2PortHopping(t *testing.T) {
+	uri := "hysteria2://letmein@example.com:443,5000-6000/?sni=example.com#hop"
+	proxies, err := ConvertsV2Ray([]byte(uri))
+	assert.Nil(t, err)
+	assert.Equal(t, "example.com", proxies[0]["server"])
+	assert.Equal(t, "443", proxies[0]["port"])
+	assert.Equal(t, "443,5000-6000", proxies[0]["ports"])
+
+	_, err = adapter.ParseProxy(proxies[0])
+	assert.NoError(t, err)
+}
+
+func TestConvertsV2Ray_hysteria2RealmScheme(t *testing.T) {
+	uri := "hysteria2+realm://tok3n@rendezvous.example.com:8443/rid42?auth=letmein&stun=stun1:3478&stun=stun2:3478&sni=example.com#realm"
+	proxies, err := ConvertsV2Ray([]byte(uri))
+	assert.Nil(t, err)
+	p := proxies[0]
+	assert.Equal(t, "hysteria2", p["type"])
+	assert.Equal(t, "letmein", p["password"])
+	assert.Equal(t, map[string]any{
+		"enable":       true,
+		"server-url":   "https://rendezvous.example.com:8443",
+		"token":        "tok3n",
+		"realm-id":     "rid42",
+		"stun-servers": []string{"stun1:3478", "stun2:3478"},
+	}, p["realm-opts"])
+
+	_, err = adapter.ParseProxy(p)
+	assert.NoError(t, err)
+}
+
 func TestConvertsV2RayMieru(t *testing.T) {
 	mierusTest := "mierus://user:pass@1.2.3.4?handshake-mode=HANDSHAKE_NO_WAIT&mtu=1400&multiplexing=MULTIPLEXING_HIGH&port=6666&port=9998-9999&port=6489&port=4896&profile=default&protocol=TCP&protocol=TCP&protocol=UDP&protocol=UDP&traffic-pattern=CCoQARoECAEQCiIYCAMQASoIMDAwMTAyMDMqCDA0MDUwNjA3"
 

@@ -13,7 +13,7 @@ require (
 	github.com/metacubex/age v0.0.0-20260603010618-28d156b4ea78
 	github.com/metacubex/amneziawg-go v0.0.0-20260612143004-19b4f1cdd5ec
 	github.com/metacubex/bart v0.26.0
-	github.com/metacubex/bbolt v0.0.0-20260628143611-ef0ff34681c8
+	github.com/metacubex/bbolt v0.0.0-20260706163408-d4ec34ad7c48
 	github.com/metacubex/blake3 v0.1.0
 	github.com/metacubex/chacha v0.1.5
 	github.com/metacubex/chi v0.1.1
@@ -28,7 +28,7 @@ require (
 	github.com/metacubex/mlkem v0.1.0
 	github.com/metacubex/quic-go v0.59.1-0.20260606115121-0662b57ad5bf
 	github.com/metacubex/randv2 v0.2.0
-	github.com/metacubex/restls-client-go v0.1.7
+	github.com/metacubex/restls-client-go v0.1.8
 	github.com/metacubex/sevenzip v1.6.4
 	github.com/metacubex/sing v0.5.7
 	github.com/metacubex/sing-mux v0.3.10

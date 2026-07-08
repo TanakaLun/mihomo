@@ -60,7 +60,10 @@ func writePacket(w io.Writer, socks5Addr, payload []byte) (int, error) {
 	buf.Write(crlf)
 	buf.Write(payload)
 
-	return w.Write(buf.Bytes())
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		return 0, err
+	}
+	return len(payload), nil
 }
 
 func WritePacket(w io.Writer, socks5Addr, payload []byte) (int, error) {

@@ -43,7 +43,7 @@ func NewSnell(options *SnellOption) (*Snell, error) {
 	if options.Version == 0 {
 		options.Version = 4
 	}
-	if options.Version != 4 && options.Version != 5 {
+	if options.Version < 1 || options.Version > 5 {
 		return nil, fmt.Errorf("snell inbound version %d is not supported", options.Version)
 	}
 

@@ -41,7 +41,9 @@ func New(config LC.SnellServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 	if config.Version == 0 {
 		config.Version = snell.Version4
 	}
-	if config.Version != snell.Version4 && config.Version != snell.Version5 {
+	switch config.Version {
+	case snell.Version1, snell.Version2, snell.Version3, snell.Version4, snell.Version5:
+	default:
 		return nil, fmt.Errorf("snell inbound version %d is not supported", config.Version)
 	}
 	if config.Psk == "" {

@@ -12,7 +12,10 @@ import (
 )
 
 func TestPoolConnCloseIsIdempotent(t *testing.T) {
-	rawConn := &recordingConn{}
+	rawConn := &recordingConn{
+		readData: []byte{CommandTunnel},
+		readErr:  shadowaead.ErrZeroChunk,
+	}
 	pooledConn := &Snell{Conn: rawConn}
 	pool := NewPool(func(context.Context) (*Snell, error) {
 		return nil, errors.New("factory should not be called")
@@ -23,6 +26,9 @@ func TestPoolConnCloseIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn.MarkReusable()
+	if _, err := conn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected peer half-close before pooling, got %v", err)
+	}
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -32,6 +38,9 @@ func TestPoolConnCloseIsIdempotent(t *testing.T) {
 
 	if rawConn.writes != 2 {
 		t.Fatalf("close should send the request and one half-close record, got %d writes", rawConn.writes)
+	}
+	if rawConn.reads != 2 {
+		t.Fatalf("close should observe the peer half-close before pooling, got %d reads", rawConn.reads)
 	}
 
 	got, err := pool.pool.Get()
@@ -141,7 +150,9 @@ func TestPoolConnCloseWriteBeforeRequestClosesRawConnection(t *testing.T) {
 }
 
 func TestPoolConnCloseWriteDoesNotReturnConnectionToPool(t *testing.T) {
-	rawConn := &recordingConn{}
+	rawConn := &recordingConn{
+		readErr: shadowaead.ErrZeroChunk,
+	}
 	pooledConn := &Snell{Conn: rawConn, reply: true}
 	factoryConn := &Snell{Conn: &recordingConn{}}
 	pool := NewPool(func(context.Context) (*Snell, error) {
@@ -170,6 +181,9 @@ func TestPoolConnCloseWriteDoesNotReturnConnectionToPool(t *testing.T) {
 	if !pooledConn.reply {
 		t.Fatal("CloseWrite should not reset reply while the read side may still be active")
 	}
+	if _, err = conn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected peer half-close before pooling, got %v", err)
+	}
 
 	if err = conn.Close(); err != nil {
 		t.Fatal(err)
@@ -184,8 +198,40 @@ func TestPoolConnCloseWriteDoesNotReturnConnectionToPool(t *testing.T) {
 	if rawConn.writes != 2 {
 		t.Fatalf("Close after CloseWrite should not send another half-close record, got %d writes", rawConn.writes)
 	}
+	if rawConn.reads != 1 {
+		t.Fatalf("Close should observe the peer half-close before pooling, got %d reads", rawConn.reads)
+	}
 	if pooledConn.reply {
 		t.Fatal("Close should reset reply before returning the connection to the pool")
+	}
+}
+
+func TestPoolConnCloseWithoutPeerHalfCloseClosesRawConnection(t *testing.T) {
+	rawConn := &recordingConn{}
+	pooledConn := &Snell{Conn: rawConn}
+	factoryConn := &Snell{Conn: &recordingConn{}}
+	pool := NewPool(func(context.Context) (*Snell, error) {
+		return factoryConn, nil
+	})
+	conn := &PoolConn{Snell: pooledConn, pool: pool}
+
+	if _, err := conn.Write([]byte{Version, CommandConnectV2, 0}); err != nil {
+		t.Fatal(err)
+	}
+	conn.MarkReusable()
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if !rawConn.closed {
+		t.Fatal("connection without peer half-close should close the raw connection")
+	}
+	got, err := pool.pool.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != factoryConn {
+		t.Fatal("connection without peer half-close should not be returned to the pool")
 	}
 }
 
@@ -202,11 +248,23 @@ func TestPoolConnReadZeroChunkReturnsEOF(t *testing.T) {
 }
 
 type recordingConn struct {
-	writes int
-	closed bool
+	writes   int
+	reads    int
+	readData []byte
+	readErr  error
+	closed   bool
 }
 
-func (c *recordingConn) Read([]byte) (int, error) {
+func (c *recordingConn) Read(b []byte) (int, error) {
+	c.reads++
+	if len(c.readData) > 0 {
+		n := copy(b, c.readData)
+		c.readData = c.readData[n:]
+		return n, nil
+	}
+	if c.readErr != nil {
+		return 0, c.readErr
+	}
 	return 0, io.EOF
 }
 

@@ -100,10 +100,13 @@ type shadowTLSOption struct {
 }
 
 type restlsOption struct {
-	Password     string `obfs:"password"`
-	Host         string `obfs:"host"`
-	VersionHint  string `obfs:"version-hint"`
-	RestlsScript string `obfs:"restls-script,omitempty"`
+	Password       string `obfs:"password"`
+	Host           string `obfs:"host"`
+	VersionHint    string `obfs:"version-hint"`
+	RestlsScript   string `obfs:"restls-script,omitempty"`
+	Fingerprint    string `obfs:"fingerprint,omitempty"`
+	SkipCertVerify bool   `obfs:"skip-cert-verify,omitempty"`
+	ForceTLS12     bool   `obfs:"force-tls12,omitempty"` // for test
 }
 
 type kcpTunOption struct {
@@ -404,7 +407,14 @@ func NewShadowSocks(option ShadowSocksOption) (*ShadowSocks, error) {
 		if err != nil {
 			return nil, fmt.Errorf("ss %s initialize restls-plugin error: %w", addr, err)
 		}
-
+		restlsConfig.InsecureSkipVerify = restlsOpt.SkipCertVerify
+		if restlsOpt.Fingerprint != "" {
+			err = restls.SetFingerprint(restlsConfig, restlsOpt.Fingerprint)
+			if err != nil {
+				return nil, fmt.Errorf("ss %s initialize restls-plugin error: %w", addr, err)
+			}
+		}
+		restlsConfig.ForceTLS12 = restlsOpt.ForceTLS12
 	} else if option.Plugin == kcptun.Mode {
 		obfsMode = kcptun.Mode
 		kcptunOpt := &kcpTunOption{}

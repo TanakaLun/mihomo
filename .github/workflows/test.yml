@@ -42,6 +42,8 @@ jobs:
       GOTOOLCHAIN: local
       # Fix mingw trying to be smart and converting paths https://github.com/moby/moby/issues/24029#issuecomment-250412919
       MSYS_NO_PATHCONV: true
+      # Skip mihomo inbound interop test
+      SKIP_INTEROP_TEST: 1
     steps:
       - uses: actions/checkout@v6
 

@@ -8,6 +8,7 @@ import (
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
 	tlsC "github.com/metacubex/mihomo/component/tls"
+	"github.com/metacubex/mihomo/transport/tlsmirror"
 
 	"github.com/metacubex/tls"
 )
@@ -22,6 +23,8 @@ type TLSConfig struct {
 	NextProtos        []string
 	ECH               *ech.Config
 	Reality           *tlsC.RealityConfig
+	TLSMirror         *tlsmirror.Config
+	TLSMirrorDialer   tlsmirror.EnrollmentDialer
 }
 
 func (cfg *TLSConfig) ToStdConfig() (*tls.Config, error) {
@@ -38,6 +41,22 @@ func (cfg *TLSConfig) ToStdConfig() (*tls.Config, error) {
 }
 
 func StreamTLSConn(ctx context.Context, conn net.Conn, cfg *TLSConfig) (net.Conn, error) {
+	if cfg.TLSMirror != nil {
+		return tlsmirror.Dial(ctx, conn, tlsmirror.ClientConfig{
+			Config:             *cfg.TLSMirror,
+			ServerName:         cfg.Host,
+			SkipCertVerify:     cfg.SkipCertVerify,
+			ALPN:               cfg.NextProtos,
+			Fingerprint:        cfg.FingerPrint,
+			Certificate:        cfg.Certificate,
+			PrivateKey:         cfg.PrivateKey,
+			ClientFingerprint:  cfg.ClientFingerprint,
+			ForwardAddressHint: cfg.Host,
+			ECH:                cfg.ECH,
+			EnrollmentDialer:   cfg.TLSMirrorDialer,
+		})
+	}
+
 	tlsConfig, err := cfg.ToStdConfig()
 	if err != nil {
 		return nil, err

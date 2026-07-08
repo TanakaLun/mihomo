@@ -189,7 +189,12 @@ func (spc *ssrPacketConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	if err != nil {
 		return
 	}
-	return spc.EnhancePacketConn.WriteTo(packet[3:], spc.rAddr)
+	packet = packet[3:]
+	_, err = spc.EnhancePacketConn.WriteTo(packet, spc.rAddr)
+	if err != nil {
+		return 0, err
+	}
+	return len(b), nil
 }
 
 func (spc *ssrPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {

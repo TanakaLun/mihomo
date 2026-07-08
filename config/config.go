@@ -276,7 +276,7 @@ type RawTun struct {
 	Stack               C.TUNStack `yaml:"stack" json:"stack"`
 	DNSHijack           []string   `yaml:"dns-hijack" json:"dns-hijack"`
 	AutoRoute           bool       `yaml:"auto-route" json:"auto-route"`
-	AutoDetectInterface bool       `yaml:"auto-detect-interface"`
+	AutoDetectInterface bool       `yaml:"auto-detect-interface" json:"auto-detect-interface"`
 
 	MTU        uint32 `yaml:"mtu" json:"mtu,omitempty"`
 	GSO        bool   `yaml:"gso" json:"gso,omitempty"`
@@ -349,10 +349,10 @@ type RawIPTables struct {
 }
 
 type RawExperimental struct {
-	Fingerprints     []string `yaml:"fingerprints"`
-	QUICGoDisableGSO bool     `yaml:"quic-go-disable-gso"`
-	QUICGoDisableECN bool     `yaml:"quic-go-disable-ecn"`
-	IP4PEnable       bool     `yaml:"dialer-ip4p-convert"`
+	Fingerprints     []string `yaml:"fingerprints" json:"fingerprints"`
+	QUICGoDisableGSO bool     `yaml:"quic-go-disable-gso" json:"quic-go-disable-gso"`
+	QUICGoDisableECN bool     `yaml:"quic-go-disable-ecn" json:"quic-go-disable-ecn"`
+	IP4PEnable       bool     `yaml:"dialer-ip4p-convert" json:"dialer-ip4p-convert"`
 }
 
 type RawProfile struct {
@@ -997,11 +997,11 @@ func parseListeners(cfg *RawConfig) (listeners map[string]C.InboundListener, err
 	for index, mapping := range cfg.Listeners {
 		inboundListener, err := listener.ParseListener(mapping)
 		if err != nil {
-			return nil, fmt.Errorf("proxy %d: %w", index, err)
+			return nil, fmt.Errorf("listener %d: %w", index, err)
 		}
 
 		name := inboundListener.Name()
-		if _, exist := mapping[name]; exist {
+		if _, exist := listeners[name]; exist {
 			return nil, fmt.Errorf("listener %s is the duplicate name", name)
 		}
 

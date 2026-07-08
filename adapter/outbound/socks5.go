@@ -222,7 +222,11 @@ func (uc *socksPacketConn) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	if err != nil {
 		return
 	}
-	return uc.PacketConn.WriteTo(packet, uc.rAddr)
+	_, err = uc.PacketConn.WriteTo(packet, uc.rAddr)
+	if err != nil {
+		return 0, err
+	}
+	return len(b), nil
 }
 
 func (uc *socksPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {

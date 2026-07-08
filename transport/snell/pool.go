@@ -57,11 +57,13 @@ type PoolConn struct {
 	closeOnce          sync.Once
 	closeErr           error
 	reusableState      atomic.Int32
+	peerClosed         atomic.Bool
 }
 
 func (pc *PoolConn) Read(b []byte) (int, error) {
 	n, err := pc.Snell.Read(b)
 	if err == shadowaead.ErrZeroChunk {
+		pc.peerClosed.Store(true)
 		return n, io.EOF
 	}
 	return n, err
@@ -105,6 +107,10 @@ func (pc *PoolConn) Close() error {
 			return
 		}
 
+		if !pc.peerClosed.Load() {
+			_ = pc.Snell.Close()
+			return
+		}
 		// mihomo use SetReadDeadline to break bidirectional copy between client and server.
 		// reset it before reuse connection to avoid io timeout error.
 		_ = pc.Snell.Conn.SetReadDeadline(time.Time{})
