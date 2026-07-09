@@ -678,7 +678,7 @@ proxies: # socks5
     # client-fingerprint: chrome    # Available: "chrome","firefox","safari","ios","random", currently only support TLS transport in TCP/GRPC/WS/HTTP for VLESS/Vmess and trojan.
     # skip-cert-verify: true
     # servername: example.com # priority over wss host
-    # 如果填写 tlsmirror-opts 则开启 tlsmirror（当 tls: true 时），servername 和 alpn 使用上层配置
+    # 如果填写 tlsmirror-opts 则开启 tlsmirror（当 tls: true 时）。tlsmirror 的 TLS 载体会使用同一出站中的 `servername`、`alpn`、`skip-cert-verify`、`fingerprint`、`certificate`、`private-key`、`client-fingerprint` 和 `ech-opts` 配置；`servername` 为空时使用 `server`。
     # tlsmirror-opts:
     #   primary-key: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= # 必填，32 字节主密钥的 base64 编码
     #   explicit-nonce-ciphersuites: [156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 49195, 49196, 49197, 49198, 49199, 49200, 49201, 49202, 49290, 49291, 49293, 49316, 49317, 49318, 49319, 49320, 49321, 49322, 49323, 49324, 49325, 49326, 49327, 52392, 52393, 52394, 52395, 52396, 52397, 52398] # TLS 1.2 载体使用显式 nonce 的加密套件
