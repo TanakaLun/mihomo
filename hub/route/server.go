@@ -18,6 +18,7 @@ import (
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/component/profile"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp"
 	"github.com/metacubex/mihomo/tunnel/statistic"
@@ -46,10 +47,12 @@ func SetEmbedMode(embed bool) {
 }
 
 type Traffic struct {
-	Up        int64 `json:"up"`
-	Down      int64 `json:"down"`
-	UpTotal   int64 `json:"upTotal"`
-	DownTotal int64 `json:"downTotal"`
+	Up            int64 `json:"up"`
+	Down          int64 `json:"down"`
+	UpTotal       int64 `json:"upTotal"`
+	DownTotal     int64 `json:"downTotal"`
+	UpCumulative  int64 `json:"upCumulative"`
+	DownCumulative int64 `json:"downCumulative"`
 }
 
 type Memory struct {
@@ -123,6 +126,8 @@ func router(isDebug bool, secret string, dohServer string, cors Cors) *chi.Mux {
 		r.Get("/", hello)
 		r.Get("/logs", getLogs)
 		r.Get("/traffic", traffic)
+		r.Get("/traffic/cumulative", getCumulativeTraffic)
+		r.Delete("/traffic/cumulative", resetCumulativeTraffic)
 		r.Get("/memory", memory)
 		r.Get("/version", version)
 		r.Mount("/configs", configRouter())
@@ -392,11 +397,14 @@ func traffic(w http.ResponseWriter, r *http.Request) {
 		buf.Reset()
 		up, down := t.Now()
 		upTotal, downTotal := t.Total()
+		upCumulative, downCumulative := t.CumulativeTotal()
 		if err := json.NewEncoder(buf).Encode(Traffic{
-			Up:        up,
-			Down:      down,
-			UpTotal:   upTotal,
-			DownTotal: downTotal,
+			Up:            up,
+			Down:          down,
+			UpTotal:       upTotal,
+			DownTotal:     downTotal,
+			UpCumulative:  upCumulative,
+			DownCumulative: downCumulative,
 		}); err != nil {
 			break
 		}
@@ -567,6 +575,31 @@ func getLogs(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+}
+
+func getCumulativeTraffic(w http.ResponseWriter, r *http.Request) {
+	if !profile.StoreTrafficCumulative.Load() {
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, newError("traffic cumulative is disabled"))
+		return
+	}
+
+	up, down := statistic.DefaultManager.CumulativeTotal()
+	render.JSON(w, r, render.M{
+		"upCumulative":   up,
+		"downCumulative": down,
+	})
+}
+
+func resetCumulativeTraffic(w http.ResponseWriter, r *http.Request) {
+	if !profile.StoreTrafficCumulative.Load() {
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, newError("traffic cumulative is disabled"))
+		return
+	}
+
+	statistic.DefaultManager.ResetCumulative()
+	render.NoContent(w, r)
 }
 
 func version(w http.ResponseWriter, r *http.Request) {

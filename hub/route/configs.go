@@ -1,12 +1,16 @@
 package route
 
 import (
+	"encoding/json"
 	"net/netip"
 	"path/filepath"
+	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/process"
+	"github.com/metacubex/mihomo/component/profile"
+	"github.com/metacubex/mihomo/component/profile/cachefile"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/component/updater"
 	"github.com/metacubex/mihomo/config"
@@ -16,6 +20,7 @@ import (
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 
 	"github.com/metacubex/chi"
 	"github.com/metacubex/chi/render"
@@ -57,6 +62,7 @@ type configSchema struct {
 	TcpConcurrent     *bool                    `json:"tcp-concurrent"`
 	FindProcessMode   *process.FindProcessMode `json:"find-process-mode"`
 	InterfaceName     *string                  `json:"interface-name"`
+	TrafficCumulative *bool                    `json:"traffic-cumulative"`
 }
 
 type tunSchema struct {
@@ -128,7 +134,13 @@ type tuicServerSchema struct {
 
 func getConfigs(w http.ResponseWriter, r *http.Request) {
 	general := executor.GetGeneral()
-	render.JSON(w, r, general)
+	response := map[string]any{
+		"traffic-cumulative": profile.StoreTrafficCumulative.Load(),
+	}
+	// embed general fields
+	b, _ := json.Marshal(general)
+	json.Unmarshal(b, &response)
+	render.JSON(w, r, response)
 }
 
 func pointerOrDefault[T any](p *T, def T) T {
@@ -383,6 +395,25 @@ func patchConfigs(w http.ResponseWriter, r *http.Request) {
 
 	if general.IPv6 != nil {
 		resolver.DisableIPv6 = !*general.IPv6
+	}
+
+	if general.TrafficCumulative != nil {
+		enabled := *general.TrafficCumulative
+		profile.StoreTrafficCumulative.Store(enabled)
+		if enabled {
+			dbPath := cachefile.Cache().TrafficDBPath()
+			cachefile.Cache().InitTrafficDB(dbPath)
+			up, down := cachefile.Cache().LoadCumulativeTraffic()
+			statistic.DefaultManager.SetCumulative(up, down)
+			statistic.DefaultManager.StartAutoSave(3*time.Second, func(u, d int64) {
+				cachefile.Cache().StoreCumulativeTraffic(u, d)
+			})
+		} else {
+			statistic.DefaultManager.StopAutoSave()
+			up, down := statistic.DefaultManager.CumulativeTotal()
+			cachefile.Cache().StoreCumulativeTraffic(up, down)
+			cachefile.Cache().CloseTrafficDB()
+		}
 	}
 
 	render.NoContent(w, r)

@@ -181,6 +181,12 @@ type Profile struct {
 	StoreFakeIP   bool
 }
 
+// TrafficCumulative config
+type TrafficCumulative struct {
+	Enable       bool
+	DatabaseFile string
+}
+
 // TLS config
 type TLS struct {
 	Certificate     string
@@ -200,8 +206,9 @@ type Config struct {
 	NTP           *NTP
 	DNS           *DNS
 	Hosts         *trie.DomainTrie[resolver.HostValue]
-	Profile       *Profile
-	Rules         []C.Rule
+	Profile            *Profile
+	TrafficCumulative  *TrafficCumulative
+	Rules              []C.Rule
 	SubRules      map[string][]C.Rule
 	Users         []auth.AuthUser
 	Proxies       map[string]C.Proxy
@@ -387,6 +394,11 @@ type RawSniffingConfig struct {
 	OverrideDest *bool    `yaml:"override-destination" json:"override-destination"`
 }
 
+type RawTrafficCumulative struct {
+	Enable       bool   `yaml:"enable" json:"enable"`
+	DatabaseFile string `yaml:"database-file" json:"database-file"`
+}
+
 type RawTLS struct {
 	Certificate     string   `yaml:"certificate" json:"certificate"`
 	PrivateKey      string   `yaml:"private-key" json:"private-key"`
@@ -460,8 +472,9 @@ type RawConfig struct {
 	Experimental  RawExperimental           `yaml:"experimental" json:"experimental"`
 	Profile       RawProfile                `yaml:"profile" json:"profile"`
 	GeoXUrl       RawGeoXUrl                `yaml:"geox-url" json:"geox-url"`
-	Sniffer       RawSniffer                `yaml:"sniffer" json:"sniffer"`
-	TLS           RawTLS                    `yaml:"tls" json:"tls"`
+	Sniffer           RawSniffer                `yaml:"sniffer" json:"sniffer"`
+	TLS               RawTLS                    `yaml:"tls" json:"tls"`
+	TrafficCumulative RawTrafficCumulative       `yaml:"traffic-cumulative" json:"traffic-cumulative"`
 
 	ClashForAndroid RawClashForAndroid `yaml:"clash-for-android" json:"clash-for-android"`
 }
@@ -591,6 +604,10 @@ func DefaultRawConfig() *RawConfig {
 			ParsePureIp:     true,
 			OverrideDest:    true,
 		},
+		TrafficCumulative: RawTrafficCumulative{
+			Enable:       false,
+			DatabaseFile: "",
+		},
 		ExternalUIURL: "https://github.com/MetaCubeX/metacubexd/archive/refs/heads/gh-pages.zip",
 		ExternalControllerCors: RawCors{
 			AllowOrigins:        []string{"*"},
@@ -662,6 +679,12 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 		return nil, err
 	}
 	config.Profile = profile
+
+	trafficCumulative, err := parseTrafficCumulative(rawCfg)
+	if err != nil {
+		return nil, err
+	}
+	config.TrafficCumulative = trafficCumulative
 
 	tlsCfg, err := parseTLS(rawCfg)
 	if err != nil {
@@ -857,6 +880,13 @@ func parseProfile(cfg *RawConfig) (*Profile, error) {
 	return &Profile{
 		StoreSelected: cfg.Profile.StoreSelected,
 		StoreFakeIP:   cfg.Profile.StoreFakeIP,
+	}, nil
+}
+
+func parseTrafficCumulative(cfg *RawConfig) (*TrafficCumulative, error) {
+	return &TrafficCumulative{
+		Enable:       cfg.TrafficCumulative.Enable,
+		DatabaseFile: cfg.TrafficCumulative.DatabaseFile,
 	}, nil
 }
 

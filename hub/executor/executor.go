@@ -40,6 +40,7 @@ import (
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp/ntp"
 	"github.com/metacubex/mihomo/tunnel"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 )
 
 var mux sync.Mutex
@@ -118,6 +119,7 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	runtime.GC()
 	tunnel.OnRunning()
 	updateUpdater(cfg)
+	updateTrafficCumulative(cfg)
 
 	resolver.ResetConnection()
 }
@@ -445,6 +447,41 @@ func updateProfile(cfg *config.Config) {
 	}
 }
 
+func updateTrafficCumulative(cfg *config.Config) {
+	trafficCfg := cfg.TrafficCumulative
+	if trafficCfg == nil {
+		return
+	}
+
+	profile.StoreTrafficCumulative.Store(trafficCfg.Enable)
+	statistic.DefaultManager.StopAutoSave()
+
+	if trafficCfg.Enable {
+		databaseFile := trafficCfg.DatabaseFile
+		if databaseFile != "" {
+			cachefile.Cache().InitTrafficDB(databaseFile)
+		} else {
+			cachefile.Cache().InitTrafficDB("")
+		}
+
+		up, down := cachefile.Cache().LoadCumulativeTraffic()
+		statistic.DefaultManager.SetCumulative(up, down)
+
+		statistic.DefaultManager.StartAutoSave(3*time.Second, func(u, d int64) {
+			cachefile.Cache().StoreCumulativeTraffic(u, d)
+		})
+
+		log.Infoln("[TrafficCumulative] enabled, database: %s", func() string {
+			if databaseFile != "" {
+				return databaseFile
+			}
+			return "traffic.db (default)"
+		}())
+	} else {
+		cachefile.Cache().CloseTrafficDB()
+	}
+}
+
 func patchSelectGroup(proxies map[string]C.Proxy) {
 	mapping := cachefile.Cache().SelectedMap()
 	if mapping == nil {
@@ -533,6 +570,13 @@ func Shutdown() {
 	listener.Cleanup()
 	tproxy.CleanupTProxyIPTables()
 	resolver.StoreFakePoolState()
+
+	if profile.StoreTrafficCumulative.Load() {
+		statistic.DefaultManager.StopAutoSave()
+		up, down := statistic.DefaultManager.CumulativeTotal()
+		cachefile.Cache().StoreCumulativeTraffic(up, down)
+		cachefile.Cache().CloseTrafficDB()
+	}
 
 	log.Warnln("Mihomo shutting down")
 }
