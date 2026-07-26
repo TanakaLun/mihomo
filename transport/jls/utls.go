@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"errors"
+	"io"
 	"net"
 	"strings"
 
@@ -21,13 +23,16 @@ import (
 )
 
 const (
-	jlsClientHelloType       = 1
-	jlsServerHelloType       = 2
-	jlsHandshakeHeaderLen    = 4
-	jlsHelloLegacyVersionLen = 2
-	jlsHelloRandomLen        = 32
-	jlsHelloRandomOffset     = jlsHandshakeHeaderLen + jlsHelloLegacyVersionLen
-	jlsRandomSeedLen         = jlsHelloRandomLen / 2
+	jlsClientHelloType               = 1
+	jlsServerHelloType               = 2
+	jlsHandshakeHeaderLen            = 4
+	jlsHelloLegacyVersionLen         = 2
+	jlsHelloRandomLen                = 32
+	jlsHelloRandomOffset             = jlsHandshakeHeaderLen + jlsHelloLegacyVersionLen
+	jlsRandomSeedLen                 = jlsHelloRandomLen / 2
+	jlsDowngradeCanaryTLS12          = "DOWNGRD\x01"
+	jlsDowngradeCanaryTLS11          = "DOWNGRD\x00"
+	jlsHelloRetryRequestRandomSuffix = "\x07\x9e\x09\xe2\xc8\xa8\x33\x9c"
 )
 
 func newUTLSClient(ctx context.Context, conn net.Conn, config *ClientConfig) (net.Conn, bool, error) {
@@ -83,7 +88,7 @@ func newUTLSClient(ctx context.Context, conn net.Conn, config *ClientConfig) (ne
 	if len(hello.Random) != jlsHelloRandomLen {
 		return nil, true, errors.New("jls: invalid uTLS client random")
 	}
-	fakeRandom, err := jlsBuildFakeRandom(config.User, hello.Random[:jlsRandomSeedLen], authData)
+	fakeRandom, err := jlsBuildFakeRandom(config.User, hello.Random[:jlsRandomSeedLen], authData, rand.Reader)
 	if err != nil {
 		return nil, true, err
 	}
@@ -262,7 +267,7 @@ func cloneJLSHello(raw []byte, messageType byte) ([]byte, error) {
 	return append([]byte(nil), raw...), nil
 }
 
-func jlsBuildFakeRandom(user User, random16, authData []byte) ([]byte, error) {
+func jlsBuildFakeRandom(user User, random16, authData []byte, random io.Reader) ([]byte, error) {
 	if len(random16) != jlsRandomSeedLen {
 		return nil, errors.New("jls: random seed must be 16 bytes")
 	}
@@ -270,7 +275,29 @@ func jlsBuildFakeRandom(user User, random16, authData []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return aead.Seal(nil, nonce[:], random16, nil), nil
+	seed := append([]byte(nil), random16...)
+	// JLS v3 reserves the TLS downgrade canaries and the HRR random suffix.
+	// Regenerate N instead of emitting a FakeRandom ending in one of them.
+	for {
+		fakeRandom := aead.Seal(nil, nonce[:], seed, nil)
+		if !jlsHasForbiddenRandomSuffix(fakeRandom) {
+			return fakeRandom, nil
+		}
+		if _, err := io.ReadFull(random, seed); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func jlsHasForbiddenRandomSuffix(random []byte) bool {
+	const suffixLen = len(jlsDowngradeCanaryTLS12)
+	if len(random) < suffixLen {
+		return false
+	}
+	suffix := string(random[len(random)-suffixLen:])
+	return suffix == jlsDowngradeCanaryTLS12 ||
+		suffix == jlsDowngradeCanaryTLS11 ||
+		suffix == jlsHelloRetryRequestRandomSuffix
 }
 
 func jlsCheckFakeRandom(user User, fakeRandom, authData []byte) bool {

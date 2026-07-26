@@ -19,6 +19,18 @@ import (
 	httpTLS "github.com/metacubex/tls"
 )
 
+func TestJLSForbiddenRandomSuffix(t *testing.T) {
+	for _, suffix := range []string{jlsDowngradeCanaryTLS12, jlsDowngradeCanaryTLS11, jlsHelloRetryRequestRandomSuffix} {
+		random := append(make([]byte, jlsHelloRandomLen-len(suffix)), suffix...)
+		if !jlsHasForbiddenRandomSuffix(random) {
+			t.Fatalf("JLS accepted forbidden random suffix %x", suffix)
+		}
+	}
+	if jlsHasForbiddenRandomSuffix(make([]byte, jlsHelloRandomLen)) {
+		t.Fatal("JLS rejected an ordinary random suffix")
+	}
+}
+
 func TestJLSClientServer(t *testing.T) {
 	for _, clientFingerprint := range []string{"", "chrome"} {
 		name := "Go"

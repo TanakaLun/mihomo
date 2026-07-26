@@ -2276,10 +2276,9 @@ listeners:
       # sni: example.com # JLS 伪装目标 SNI，留空时从 addr 推导
       # proxy: proxy # 伪装上游使用的代理
       # rate-limit: 0 # 转发限速，单位 bit/s，0 表示不限速
-      # quic-version-probe: false # 在首次连接时探测伪装上游版本
     # alpn:
     #   - h3
-    # quic-versions: [v1] # 本机手动配置及探测失败时的版本；支持 v1/v2
+    # quic-versions: [v1] # 本机支持的 QUIC 版本；支持 v1/v2
     # zero-rtt: true
     # congestion-controller: bbr # Available: "cubic", "new_reno", "bbr". Default: "cubic"
     # up: 100 Mbps # enables brutal negotiation via a mihomo private extension; server upload/client download speed cap; falls back to congestion-controller when unsupported
