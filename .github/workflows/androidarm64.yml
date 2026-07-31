@@ -1,4 +1,4 @@
-name: Build Android arm64
+name: Build Android ARM64
 on:
   workflow_dispatch:
   push:
@@ -22,10 +22,16 @@ jobs:
     - uses: actions/checkout@v6
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
       with:
-        go-version: '1.26.0'
-        check-latest: true
+        go-download-base-url: 'https://github.com/MetaCubeX/go/releases/download/build'
+        go-version: '1.26'
+
+    - name: Verify Go installation
+      run: go version
+
+    - name: Verify Go env
+      run: go env
 
     - name: Download dependencies
       run: |
@@ -80,6 +86,12 @@ jobs:
     - name: Modify the Update Link
       run: sed -i 's|github\.com/MetaCubeX/mihomo|github.com/TanakaLun/mihomo|g' ./component/updater/update_core.go
 
+    - name: Update CA
+      run: |
+        sudo apt-get update && sudo apt-get install -y ca-certificates
+        sudo update-ca-certificates
+        cp -f /etc/ssl/certs/ca-certificates.crt component/ca/ca-certificates.crt
+
     - name: Set variables
       run: |
         BRANCH_NAME="${GITHUB_REF#refs/heads/}"
@@ -89,6 +101,8 @@ jobs:
         echo "VERSION=${VERSION}" >> $GITHUB_ENV
         echo "BUILDTIME=$(date)" >> $GITHUB_ENV
         echo "CGO_ENABLED=1" >> $GITHUB_ENV
+        echo "GOTOOLCHAIN=local" >> $GITHUB_ENV
+        echo "BUILDTAG=" >> $GITHUB_ENV
 
     - name: Setup NDK
       uses: nttld/setup-ndk@v1
@@ -104,15 +118,12 @@ jobs:
         echo "GOOS=android" >> $GITHUB_ENV
         echo "GOARCH=arm64" >> $GITHUB_ENV
 
-    - name: Verify Go environment
-      run: go env
-
     - name: Build mihomo for Android arm64 (with patched sing-tun)
       run: |
         go clean -cache
         
         go build -v -tags "with_gvisor" -trimpath \
-          -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' \
+          -ldflags "${BUILDTAG} -X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' \
                     -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' \
                     -w -s -buildid=" \
           -o mihomo
@@ -126,11 +137,12 @@ jobs:
 
     - name: Compress binary
       run: |
-        gzip -c mihomo > mihomo-${VERSION}.gz
+        cp mihomo mihomo-android-arm64
+        gzip -c mihomo-android-arm64 > mihomo-android-arm64-${VERSION}.gz
 
     - name: Upload artifact
       uses: actions/upload-artifact@v7
       with:
-        name: mihomo-android-arm64
+        name: android-arm64
         path: |
-          mihomo-*.gz
+          mihomo-android-arm64-*.gz
