@@ -2,11 +2,14 @@ package provider
 
 import (
 	"fmt"
+	"net/netip"
 
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/rules/common"
+
+	"go4.org/netipx"
 )
 
 type classicalStrategy struct {
@@ -58,6 +61,23 @@ func (c *classicalStrategy) payloadToRule(rule string) (C.Rule, error) {
 }
 
 func (c *classicalStrategy) FinishInsert() {}
+
+// ToIpCidr extracts the destination IP-CIDR rules of a classical rule-set into
+// an IPSet, matching sing-box's ExtractIPSet behavior for the eBPF inbound
+// bypass_rule_set.
+func (c *classicalStrategy) ToIpCidr() *netipx.IPSet {
+	var builder netipx.IPSetBuilder
+	for _, rule := range c.rules {
+		if rule.RuleType() != C.IPCIDR {
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(rule.Payload()); err == nil {
+			builder.AddPrefix(prefix)
+		}
+	}
+	set, _ := builder.IPSet()
+	return set
+}
 
 func NewClassicalStrategy(parse common.ParseRuleFunc) *classicalStrategy {
 	return &classicalStrategy{rules: []C.Rule{}, parse: parse}

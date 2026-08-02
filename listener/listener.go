@@ -726,4 +726,10 @@ func closeTunListener() {
 
 func Cleanup() {
 	closeTunListener()
+	inboundMux.Lock()
+	defer inboundMux.Unlock()
+	for name, current := range inboundListeners {
+		_ = current.Close()
+		delete(inboundListeners, name)
+	}
 }

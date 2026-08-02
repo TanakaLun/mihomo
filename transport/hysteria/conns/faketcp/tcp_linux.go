@@ -420,18 +420,31 @@ func Dial(network, address string) (*TCPConn, error) {
 		lIpAddr = &net.IPAddr{IP: lTcpAddr.IP}
 	}
 
+	// create a dialer that registers each socket's SO_COOKIE before connect()
+	// so the eBPF inbound does not re-capture faketcp's own sockets
+	newProtectedDialer := func(local net.Addr) *net.Dialer {
+		return &net.Dialer{
+			LocalAddr: local,
+			Control: func(network, address string, c syscall.RawConn) error {
+				return dialer.ApplySocketProtect(network, address, c)
+			},
+		}
+	}
+
 	// AF_INET
-	handle, err := net.DialIP("ip:tcp", lIpAddr, &net.IPAddr{IP: raddr.IP})
+	handleConn, err := newProtectedDialer(lIpAddr).Dial("ip:tcp", raddr.IP.String())
 	if err != nil {
 		return nil, err
 	}
+	handle := handleConn.(*net.IPConn)
 
 	// create an established tcp connection
 	// will hack this tcp connection for packet transmission
-	tcpconn, err := net.DialTCP(network, lTcpAddr, raddr)
+	tcpconnConn, err := newProtectedDialer(lTcpAddr).Dial(network, raddr.String())
 	if err != nil {
 		return nil, err
 	}
+	tcpconn := tcpconnConn.(*net.TCPConn)
 
 	// fields
 	conn := new(TCPConn)

@@ -122,7 +122,7 @@ jobs:
       run: |
         go clean -cache
         
-        go build -v -tags "with_gvisor" -trimpath \
+        go build -v -tags "with_gvisor with_ebpf" -trimpath \
           -ldflags "${BUILDTAG} -X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' \
                     -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' \
                     -w -s -buildid=" \

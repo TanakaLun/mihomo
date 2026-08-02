@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"net"
 	"net/netip"
 	"strings"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"github.com/metacubex/mihomo/log"
 
 	D "github.com/miekg/dns"
+
+	"go4.org/netipx"
 )
 
 type (
@@ -156,6 +159,19 @@ func withFakeIP(skipper *fakeip.Skipper, fakePool *fakeip.Pool, fakePool6 *fakei
 				return next(ctx, r)
 			}
 
+			// When the eBPF inbound has an active bypass CIDR policy, resolve the
+			// real address first and keep it real if it falls inside the bypass
+			// set, so the kernel eBPF bypass can engage (matching sing-box).
+			if q.Qtype == D.TypeA || q.Qtype == D.TypeAAAA {
+				if bypassSet := resolver.EBFPBypassIPSet.Load(); bypassSet != nil {
+					if realMsg, err := next(ctx, r); err == nil && realMsg != nil {
+						if realMsgContainsBypass(realMsg, bypassSet) {
+							return realMsg, nil
+						}
+					}
+				}
+			}
+
 			var rr D.RR
 			switch q.Qtype {
 			case D.TypeA:
@@ -194,6 +210,28 @@ func withFakeIP(skipper *fakeip.Skipper, fakePool *fakeip.Pool, fakePool6 *fakei
 			return msg, nil
 		}
 	}
+}
+
+// realMsgContainsBypass reports whether a resolved DNS answer contains an
+// address inside the eBPF bypass set.
+func realMsgContainsBypass(msg *D.Msg, set *netipx.IPSet) bool {
+	for _, answer := range msg.Answer {
+		var addr netip.Addr
+		switch rr := answer.(type) {
+		case *D.A:
+			if len(rr.A) == net.IPv4len {
+				addr = netip.AddrFrom4([4]byte(rr.A))
+			}
+		case *D.AAAA:
+			if len(rr.AAAA) == net.IPv6len {
+				addr = netip.AddrFrom16([16]byte(rr.AAAA))
+			}
+		}
+		if addr.IsValid() && set.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func withResolver(resolver resolver.Resolver, ipv6 bool) handler {

@@ -98,6 +98,9 @@ func ListenPacket(ctx context.Context, network, address string, rAddrPort netip.
 			// avoid "The requested address is not valid in its context."
 			opt.interfaceName = ""
 		}
+		// Always install the control chain so the socket-protect hook runs on
+		// every socket, even when no bind/routing-mark is configured.
+		addControlToListenConfig(lc, func(context.Context, string, string, syscall.RawConn) error { return nil })
 		if opt.interfaceName != "" {
 			bind := bindIfaceToListenConfig
 			if opt.fallbackBind {
@@ -151,6 +154,9 @@ func dialContext(ctx context.Context, network string, destination netip.Addr, po
 				opt.interfaceName = finder.FindInterfaceName(destination)
 			}
 		}
+		// Always install the control chain so the socket-protect hook runs on
+		// every socket, even when no bind/routing-mark/tfo is configured.
+		addControlToDialer(dialer, func(context.Context, string, string, syscall.RawConn) error { return nil })
 		if opt.interfaceName != "" {
 			bind := bindIfaceToDialer
 			if opt.fallbackBind {

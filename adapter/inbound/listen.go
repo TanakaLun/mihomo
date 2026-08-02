@@ -9,6 +9,7 @@ import (
 
 	"github.com/metacubex/mihomo/common/atomic"
 	"github.com/metacubex/mihomo/common/sockopt"
+	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/keepalive"
 	"github.com/metacubex/mihomo/component/mptcp"
 
@@ -59,7 +60,7 @@ func (l ListenConfig) newListenConfig() *tfo.ListenConfig {
 				return err
 			}
 		}
-		return nil
+		return dialer.ApplySocketProtect(network, address, c)
 	}
 	return &lc
 }

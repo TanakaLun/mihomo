@@ -8,7 +8,7 @@ VERSION=beta-$(shell git rev-parse --short HEAD)
 else ifeq ($(BRANCH),)
 VERSION=$(shell git describe --tags)
 else
-VERSION=$(shell git rev-parse --short HEAD)
+VERSION=TanakaLun-$(shell git rev-parse --short HEAD)
 endif
 
 BUILDTIME=$(shell date -u)
@@ -177,6 +177,20 @@ windows-arm64:
 
 windows-arm32v7:
 	GOARCH=arm GOOS=windows GOARM=7 $(GOBUILD) -o $(BINDIR)/$(NAME)-$@.exe
+
+# eBPF inbound builds require cgo and the with_ebpf build tag.
+EBPF_TAGS=with_gvisor with_ebpf
+
+linux-amd64-ebpf:
+	CGO_ENABLED=1 GOARCH=amd64 GOOS=linux GOAMD64=v3 go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
+
+linux-arm64-ebpf:
+	CGO_ENABLED=1 GOARCH=arm64 GOOS=linux go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
+
+android-arm64-ebpf:
+	CGO_ENABLED=1 GOARCH=arm64 GOOS=android go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
+
+all-ebpf: linux-amd64-ebpf linux-arm64-ebpf
 
 gz_releases=$(addsuffix .gz, $(PLATFORM_LIST))
 zip_releases=$(addsuffix .zip, $(WINDOWS_ARCH_LIST))
