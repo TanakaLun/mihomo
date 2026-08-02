@@ -161,8 +161,10 @@ func (s *internalListenerSet) udpConn(ipv6 bool) *net.UDPConn {
 
 func (i *Inbound) newListener(network string, ipv6 bool, port uint16) (*internalListener, error) {
 	listenAddress := "0.0.0.0"
+	listenNetwork := network + "4"
 	if ipv6 {
 		listenAddress = "::"
+		listenNetwork = network + "6"
 	}
 	listenPort := "0"
 	if port != 0 {
@@ -180,9 +182,9 @@ func (i *Inbound) newListener(network string, ipv6 bool, port uint16) (*internal
 	}
 	var err error
 	if network == "tcp" {
-		current.listener, err = lc.Listen(context.Background(), "tcp", address)
+		current.listener, err = lc.Listen(context.Background(), listenNetwork, address)
 	} else {
-		current.packet, err = lc.ListenPacket(context.Background(), "udp", address)
+		current.packet, err = lc.ListenPacket(context.Background(), listenNetwork, address)
 	}
 	if err != nil {
 		return nil, err
