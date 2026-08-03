@@ -7,17 +7,24 @@ import (
 )
 
 type EBPF struct {
-	Network         []string        `json:"network" yaml:"network"`
-	UDPTimeout      int64           `json:"udp-timeout" yaml:"udp-timeout"`
-	DNSMode         string          `json:"dns-mode" yaml:"dns-mode"`
-	CgroupPath      string          `json:"cgroup-path" yaml:"cgroup-path"`
-	RedirectAddress []netip.Prefix  `json:"redirect-address" yaml:"redirect-address"`
-	BypassRuleSet   []string        `json:"bypass-rule-set" yaml:"bypass-rule-set"`
-	IncludeUID      []uint32        `json:"include-uid" yaml:"include-uid"`
-	IncludeUIDRange []string        `json:"include-uid-range" yaml:"include-uid-range"`
-	ExcludeUID      []uint32        `json:"exclude-uid" yaml:"exclude-uid"`
-	ExcludeUIDRange []string        `json:"exclude-uid-range" yaml:"exclude-uid-range"`
-	MapCapacity     EBPFMapCapacity `json:"map-capacity" yaml:"map-capacity"`
+	Network         []string          `json:"network" yaml:"network"`
+	UDPTimeout      int64             `json:"udp-timeout" yaml:"udp-timeout"`
+	DNSMode         string            `json:"dns-mode" yaml:"dns-mode"`
+	CgroupPath      string            `json:"cgroup-path" yaml:"cgroup-path"`
+	RedirectAddress []netip.Prefix    `json:"redirect-address" yaml:"redirect-address"`
+	BypassRuleSet   []string          `json:"bypass-rule-set" yaml:"bypass-rule-set"`
+	IncludeUID      []uint32          `json:"include-uid" yaml:"include-uid"`
+	IncludeUIDRange []string          `json:"include-uid-range" yaml:"include-uid-range"`
+	ExcludeUID      []uint32          `json:"exclude-uid" yaml:"exclude-uid"`
+	ExcludeUIDRange []string          `json:"exclude-uid-range" yaml:"exclude-uid-range"`
+	MapCapacity     EBPFMapCapacity   `json:"map-capacity" yaml:"map-capacity"`
+	SharedNetwork   EBPFSharedNetwork `json:"shared-network" yaml:"shared-network"`
+}
+
+type EBPFSharedNetwork struct {
+	Enabled          bool     `json:"enabled" yaml:"enabled" inbound:"enabled,omitempty"`
+	IncludeInterface []string `json:"include-interface" yaml:"include-interface" inbound:"include-interface,omitempty"`
+	MapCapacity      uint32   `json:"map-capacity" yaml:"map-capacity" inbound:"map-capacity,omitempty"`
 }
 
 type EBPFMapCapacity struct {

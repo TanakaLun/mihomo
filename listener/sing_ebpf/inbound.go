@@ -51,6 +51,8 @@ type Inbound struct {
 
 	listeners internalListenerSet
 
+	sharedNetwork *sharedNetwork
+
 	backendAccess sync.RWMutex
 	backend       *ECommon.CgroupBackend
 
@@ -65,6 +67,7 @@ type Inbound struct {
 	bypassRuleSet         []P.RuleProvider
 	bypassRuleSetCallback io.Closer
 	bypassRuleSetStarted  bool
+	bypassCIDR            []netip.Prefix
 
 	udpPeriodicStop chan struct{}
 	udpPeriodicDone chan struct{}
@@ -143,6 +146,25 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 		inboundListener.bypassRuleSet = append(inboundListener.bypassRuleSet, ruleSet)
 	}
 
+	if options.SharedNetwork.Enabled {
+		if len(options.SharedNetwork.IncludeInterface) == 0 {
+			return nil, E.New("shared_network.include_interface must not be empty")
+		}
+		sharedMapCapacity, capacityErr := normalizeMapCapacityValue(
+			"shared_network.map_capacity",
+			options.SharedNetwork.MapCapacity,
+			ECommon.SharedNetworkMapCapacity,
+		)
+		if capacityErr != nil {
+			return nil, capacityErr
+		}
+		inboundListener.sharedNetwork = newSharedNetwork(
+			inboundListener,
+			options.SharedNetwork.IncludeInterface,
+			sharedMapCapacity,
+		)
+	}
+
 	if err = inboundListener.start(); err != nil {
 		_ = inboundListener.Close()
 		return nil, err
@@ -207,6 +229,11 @@ func (i *Inbound) start() error {
 	if err = backend.LoadPrograms(i.listeners.selectedPort()); err != nil {
 		return err
 	}
+	if i.sharedNetwork != nil {
+		if err = i.sharedNetwork.Start(backend); err != nil {
+			return err
+		}
+	}
 	if err = backend.Attach(); err != nil {
 		return err
 	}
@@ -236,9 +263,12 @@ func (i *Inbound) Close() error {
 		i.stopUDPPeriodic()
 		i.stopBypassRuleSets()
 		resolver.EBFPBypassIPSet.Store(nil)
+		if i.sharedNetwork != nil {
+			closeErr = i.sharedNetwork.Close()
+		}
 		backend := i.backendInstance()
 		if backend != nil {
-			closeErr = backend.Close()
+			closeErr = E.Errors(closeErr, backend.Close())
 			if backend.IsClosed() {
 				i.setBackend(nil)
 			}
@@ -293,6 +323,14 @@ func (i *Inbound) unregisterSocketProtect() {
 	i.protectRegistered = false
 }
 
+// InterfaceUpdated notifies the shared-network TC manager that interfaces may
+// have changed, so it can attach/detach downstream interfaces.
+func (i *Inbound) InterfaceUpdated() {
+	if i.sharedNetwork != nil {
+		i.sharedNetwork.InterfaceUpdated()
+	}
+}
+
 func (i *Inbound) startUDPPeriodic() {
 	i.udpPeriodicStop = make(chan struct{})
 	i.udpPeriodicDone = make(chan struct{})
@@ -326,7 +364,11 @@ func (i *Inbound) udpPeriodicLoop(stop <-chan struct{}, done chan<- struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			i.udpClientTable.sweep(time.Now(), i.udpTimeout, i)
+			i.udpClientTable.sweep(time.Now(), i.udpTimeout, func(releases []udpRedirectRelease) {
+				for _, release := range releases {
+					i.deleteUDPRedirects([]netip.Addr{release.reference.address})
+				}
+			})
 		case <-bypassTicker.C:
 			i.refreshBypassCIDRPeriodic()
 		}

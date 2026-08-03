@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,12 +20,23 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// internalListenerHandler dispatches redirected connections/packets. Both the
+// local cgroup inbound and the shared-network inbound implement it so the
+// internal listener set can be shared.
+type internalListenerHandler interface {
+	NewConnection(conn net.Conn)
+	NewPacket(data []byte, oob []byte, source netip.AddrPort)
+	acceptWarn(message ...any)
+	packetWarn(message ...any)
+}
+
 type internalListener struct {
 	network  string
 	ipv6     bool
 	listener net.Listener
 	packet   net.PacketConn
 	closed   chan struct{}
+	handler  internalListenerHandler
 }
 
 type internalListenerSet struct {
@@ -159,7 +171,38 @@ func (s *internalListenerSet) udpConn(ipv6 bool) *net.UDPConn {
 	return udpConn
 }
 
+// writeUDP writes a UDP reply back toward the client through the internal
+// listener, using packetInfo (IP_PKTINFO/IPV6_PKTINFO) so the kernel sees the
+// token address as the source.
+func (s *internalListenerSet) writeUDP(
+	payload []byte,
+	packetInfo []byte,
+	client netip.AddrPort,
+	redirectAddress netip.Addr,
+) error {
+	udpConn := s.udpConn(redirectAddress.Is6())
+	if udpConn == nil {
+		addressFamily := "IPv4"
+		if redirectAddress.Is6() {
+			addressFamily = "IPv6"
+		}
+		return E.New(addressFamily, " eBPF UDP redirect listener is unavailable")
+	}
+	_, _, err := udpConn.WriteMsgUDPAddrPort(payload, packetInfo, client)
+	return err
+}
+
 func (i *Inbound) newListener(network string, ipv6 bool, port uint16) (*internalListener, error) {
+	return newInternalListener(i.socketControl(ipv6), network, ipv6, port, i)
+}
+
+func newInternalListener(
+	socketControl func(network, address string, rawConn syscall.RawConn) error,
+	network string,
+	ipv6 bool,
+	port uint16,
+	handler internalListenerHandler,
+) (*internalListener, error) {
 	listenAddress := "0.0.0.0"
 	listenNetwork := network + "4"
 	if ipv6 {
@@ -173,12 +216,13 @@ func (i *Inbound) newListener(network string, ipv6 bool, port uint16) (*internal
 	address := net.JoinHostPort(listenAddress, listenPort)
 
 	lc := net.ListenConfig{
-		Control: i.socketControl(ipv6),
+		Control: socketControl,
 	}
 	current := &internalListener{
 		network: network,
 		ipv6:    ipv6,
 		closed:  make(chan struct{}),
+		handler: handler,
 	}
 	var err error
 	if network == "tcp" {
@@ -189,19 +233,19 @@ func (i *Inbound) newListener(network string, ipv6 bool, port uint16) (*internal
 	if err != nil {
 		return nil, err
 	}
-	go current.acceptLoop(i)
+	go current.acceptLoop()
 	return current, nil
 }
 
-func (l *internalListener) acceptLoop(i *Inbound) {
+func (l *internalListener) acceptLoop() {
 	if l.listener != nil {
-		i.acceptTCP(l)
+		l.acceptTCP()
 		return
 	}
-	i.readUDP(l)
+	l.readUDP()
 }
 
-func (i *Inbound) acceptTCP(l *internalListener) {
+func (l *internalListener) acceptTCP() {
 	for {
 		conn, err := l.listener.Accept()
 		if err != nil {
@@ -213,14 +257,14 @@ func (i *Inbound) acceptTCP(l *internalListener) {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			i.udpWarnings.accept.warn(i.logWarn, "accept TCP connection: ", err)
+			l.handler.acceptWarn("accept TCP connection: ", err)
 			continue
 		}
-		go i.NewConnection(conn)
+		go l.handler.NewConnection(conn)
 	}
 }
 
-func (i *Inbound) readUDP(l *internalListener) {
+func (l *internalListener) readUDP() {
 	udpConn, ok := l.packet.(*net.UDPConn)
 	if !ok {
 		return
@@ -238,7 +282,7 @@ func (i *Inbound) readUDP(l *internalListener) {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			i.udpWarnings.packetInfo.warn(i.logWarn, "read UDP packet: ", err)
+			l.handler.packetWarn("read UDP packet: ", err)
 			continue
 		}
 		if n == 0 {
@@ -248,8 +292,16 @@ func (i *Inbound) readUDP(l *internalListener) {
 		copy(packetBuffer, buffer[:n])
 		packetOOB := make([]byte, oobN)
 		copy(packetOOB, oob[:oobN])
-		i.NewPacket(packetBuffer, packetOOB, source)
+		l.handler.NewPacket(packetBuffer, packetOOB, source)
 	}
+}
+
+func (i *Inbound) acceptWarn(message ...any) {
+	i.udpWarnings.accept.warn(i.logWarn, message...)
+}
+
+func (i *Inbound) packetWarn(message ...any) {
+	i.udpWarnings.packetInfo.warn(i.logWarn, message...)
 }
 
 func (i *Inbound) logWarn(format string, args ...any) {

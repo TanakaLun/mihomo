@@ -12,17 +12,18 @@ import (
 
 type EBPFOption struct {
 	BaseOption
-	Network         []string           `inbound:"network,omitempty"`
-	UDPTimeout      int64              `inbound:"udp-timeout,omitempty"`
-	DNSMode         string             `inbound:"dns-mode,omitempty"`
-	CgroupPath      string             `inbound:"cgroup-path,omitempty"`
-	RedirectAddress []netip.Prefix     `inbound:"redirect-address,omitempty"`
-	BypassRuleSet   []string           `inbound:"bypass-rule-set,omitempty"`
-	IncludeUID      []uint32           `inbound:"include-uid,omitempty"`
-	IncludeUIDRange []string           `inbound:"include-uid-range,omitempty"`
-	ExcludeUID      []uint32           `inbound:"exclude-uid,omitempty"`
-	ExcludeUIDRange []string           `inbound:"exclude-uid-range,omitempty"`
-	MapCapacity     LC.EBPFMapCapacity `inbound:"map-capacity,omitempty"`
+	Network         []string             `inbound:"network,omitempty"`
+	UDPTimeout      int64                `inbound:"udp-timeout,omitempty"`
+	DNSMode         string               `inbound:"dns-mode,omitempty"`
+	CgroupPath      string               `inbound:"cgroup-path,omitempty"`
+	RedirectAddress []netip.Prefix       `inbound:"redirect-address,omitempty"`
+	BypassRuleSet   []string             `inbound:"bypass-rule-set,omitempty"`
+	IncludeUID      []uint32             `inbound:"include-uid,omitempty"`
+	IncludeUIDRange []string             `inbound:"include-uid-range,omitempty"`
+	ExcludeUID      []uint32             `inbound:"exclude-uid,omitempty"`
+	ExcludeUIDRange []string             `inbound:"exclude-uid-range,omitempty"`
+	MapCapacity     LC.EBPFMapCapacity   `inbound:"map-capacity,omitempty"`
+	SharedNetwork   LC.EBPFSharedNetwork `inbound:"shared-network,omitempty"`
 }
 
 func (o EBPFOption) Equal(config C.InboundConfig) bool {
@@ -56,6 +57,7 @@ func NewEBPF(options *EBPFOption) (*EBPF, error) {
 			ExcludeUID:      options.ExcludeUID,
 			ExcludeUIDRange: options.ExcludeUIDRange,
 			MapCapacity:     options.MapCapacity,
+			SharedNetwork:   options.SharedNetwork,
 		},
 	}, nil
 }

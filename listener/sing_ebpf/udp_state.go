@@ -34,6 +34,7 @@ type udpRedirectBinding struct {
 	packetInfo []byte
 	connected  bool
 	reference  udpRedirectReference
+	sharedFlow *ECommon.SharedNetworkFlowHandle
 }
 
 type udpRedirectReference struct {
@@ -42,7 +43,13 @@ type udpRedirectReference struct {
 }
 
 type udpOriginalDestination struct {
-	original ECommon.OriginalDestination
+	original   ECommon.OriginalDestination
+	sharedFlow *ECommon.SharedNetworkFlowHandle
+}
+
+type udpRedirectRelease struct {
+	reference  udpRedirectReference
+	sharedFlow *ECommon.SharedNetworkFlowHandle
 }
 
 func (t *udpClientTable) load(client netip.AddrPort) (*udpClientState, bool) {
@@ -158,10 +165,6 @@ func (t *udpClientTable) setBindingState(
 	return released
 }
 
-type udpRedirectRelease struct {
-	reference udpRedirectReference
-}
-
 func (t *udpClientTable) setClientBinding(
 	clientState *udpClientState,
 	redirectAddress netip.Addr,
@@ -190,6 +193,7 @@ func (t *udpClientTable) setClientBinding(
 		packetInfo: sourcePacketInfo(redirectAddress),
 		connected:  connected,
 		reference:  reference,
+		sharedFlow: original.sharedFlow,
 	}
 
 	t.redirectAccess.Lock()
@@ -198,9 +202,31 @@ func (t *udpClientTable) setClientBinding(
 		t.retainRedirectLocked(reference)
 	}
 	if loaded && !current.connected && t.releaseRedirectLocked(current.reference) {
-		return []udpRedirectRelease{{reference: current.reference}}
+		return []udpRedirectRelease{{
+			reference:  current.reference,
+			sharedFlow: current.sharedFlow,
+		}}
 	}
 	return nil
+}
+
+// setSharedBinding records a shared-network UDP flow binding, which releases
+// the underlying TC flow state instead of an eBPF redirect entry.
+func (t *udpClientTable) setSharedBinding(
+	client netip.AddrPort,
+	destination netip.AddrPort,
+	redirectAddress netip.Addr,
+	flow *ECommon.SharedNetworkFlowHandle,
+) []udpRedirectRelease {
+	return t.setBindingState(
+		client,
+		redirectAddress,
+		udpRedirectReference{client: client, address: redirectAddress},
+		udpOriginalDestination{
+			original:   ECommon.OriginalDestination{Destination: destination},
+			sharedFlow: flow,
+		},
+	)
 }
 
 func (t *udpClientTable) delete(client netip.AddrPort, expectedState *udpClientState) []netip.Addr {
@@ -210,6 +236,12 @@ func (t *udpClientTable) delete(client netip.AddrPort, expectedState *udpClientS
 		addresses = append(addresses, release.reference.address)
 	}
 	return addresses
+}
+
+// deleteShared releases a shared-network client's bindings, returning the TC
+// flow handles to release.
+func (t *udpClientTable) deleteShared(client netip.AddrPort, expectedState *udpClientState) []udpRedirectRelease {
+	return t.deleteClient(client, expectedState)
 }
 
 func (t *udpClientTable) deleteClient(client netip.AddrPort, expectedState *udpClientState) []udpRedirectRelease {
@@ -228,7 +260,10 @@ func (t *udpClientTable) deleteClient(client netip.AddrPort, expectedState *udpC
 	for bindingKey := range expectedState.bindings {
 		binding := expectedState.bindings[bindingKey]
 		if !binding.connected && t.releaseRedirectLocked(binding.reference) {
-			released = append(released, udpRedirectRelease{reference: binding.reference})
+			released = append(released, udpRedirectRelease{
+				reference:  binding.reference,
+				sharedFlow: binding.sharedFlow,
+			})
 		}
 		delete(expectedState.bindings, bindingKey)
 	}
@@ -239,8 +274,9 @@ func (t *udpClientTable) deleteClient(client netip.AddrPort, expectedState *udpC
 }
 
 // sweep removes client states that have been idle for longer than timeout and
-// releases their unconnected UDP redirect entries.
-func (t *udpClientTable) sweep(now time.Time, timeout time.Duration, inbound *Inbound) {
+// passes their released bindings to release. The caller decides whether to
+// delete cgroup redirect entries or shared-network TC flow handles.
+func (t *udpClientTable) sweep(now time.Time, timeout time.Duration, release func(releases []udpRedirectRelease)) {
 	t.access.Lock()
 	clients := make([]netip.AddrPort, 0, len(t.clients))
 	for client, clientState := range t.clients {
@@ -257,8 +293,8 @@ func (t *udpClientTable) sweep(now time.Time, timeout time.Duration, inbound *In
 		if !loaded {
 			continue
 		}
-		addresses := t.delete(client, clientState)
-		inbound.deleteUDPRedirects(addresses)
+		releases := t.deleteClient(client, clientState)
+		release(releases)
 	}
 }
 

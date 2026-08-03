@@ -3,6 +3,9 @@
 package sing_ebpf
 
 import (
+	"net/netip"
+	"slices"
+
 	"github.com/metacubex/mihomo/component/resolver"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
@@ -74,6 +77,12 @@ func (i *Inbound) updateBypassRuleSet(P.RuleProvider) {
 	}
 }
 
+func (i *Inbound) currentBypassCIDR() []netip.Prefix {
+	i.bypassRuleSetAccess.Lock()
+	defer i.bypassRuleSetAccess.Unlock()
+	return slices.Clone(i.bypassCIDR)
+}
+
 func (i *Inbound) refreshBypassCIDRsLocked() (bool, error) {
 	prefixes := localInterfacePrefixes()
 	for _, ruleSet := range i.bypassRuleSet {
@@ -96,6 +105,7 @@ func (i *Inbound) refreshBypassCIDRsLocked() (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	i.bypassCIDR = prefixes
 	// Publish the effective bypass CIDR set to the DNS fake-ip middleware so
 	// domains whose real addresses fall inside it keep their real IP and the
 	// kernel eBPF bypass can engage. Only publish when bypass_rule_set is used.

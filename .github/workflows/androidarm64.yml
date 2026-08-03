@@ -121,7 +121,9 @@ jobs:
     - name: Build mihomo for Android arm64 (with patched sing-tun)
       run: |
         go clean -cache
-        
+
+        make ebpf_generate
+
         go build -v -tags "with_gvisor with_ebpf" -trimpath \
           -ldflags "${BUILDTAG} -X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' \
                     -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' \
