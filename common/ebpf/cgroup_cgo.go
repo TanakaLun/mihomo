@@ -86,6 +86,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -99,6 +100,7 @@ type CgroupBackend struct {
 	runtime             *C.struct_sb_ebpf_cgroup_runtime
 	tcpRedirectMapFD    int
 	udpRedirectMapFD    int
+	udpFlowMapFD        int
 	socketBypassMapFD   int
 	bypassIPv4CIDRMapFD int
 	bypassIPv6CIDRMapFD int
@@ -109,6 +111,7 @@ type CgroupBackend struct {
 	redirectIPv6        netip.Prefix
 	enableUDP           bool
 	hijackDNS           bool
+	lookupAndDeleteMode atomic.Int32
 }
 
 func PrepareCgroup(config CgroupConfig) (*CgroupBackend, error) {
@@ -198,6 +201,7 @@ func PrepareCgroup(config CgroupConfig) (*CgroupBackend, error) {
 		runtime:             runtimeState,
 		tcpRedirectMapFD:    int(runtimeState.tcp_redirect_map_fd),
 		udpRedirectMapFD:    int(runtimeState.udp_redirect_map_fd),
+		udpFlowMapFD:        int(runtimeState.udp_flow_map_fd),
 		socketBypassMapFD:   int(runtimeState.bypass_socket_cookie_map_fd),
 		bypassIPv4CIDRMapFD: int(runtimeState.bypass_ipv4_cidr_map_fd),
 		bypassIPv6CIDRMapFD: int(runtimeState.bypass_ipv6_cidr_map_fd),

@@ -11,12 +11,13 @@ import (
 )
 
 const (
-	bpfMapCreate     = 0
-	bpfMapLookupElem = 1
-	bpfMapUpdateElem = 2
-	bpfMapDeleteElem = 3
-	bpfMapTypeArray  = 2
-	bpfNoExist       = 1
+	bpfMapCreate              = 0
+	bpfMapLookupElem          = 1
+	bpfMapUpdateElem          = 2
+	bpfMapDeleteElem          = 3
+	bpfMapLookupAndDeleteElem = 21
+	bpfMapTypeArray           = 2
+	bpfNoExist                = 1
 )
 
 type mapElementAttr struct {
@@ -49,6 +50,10 @@ func updateMapWithFlags(mapFD int, key unsafe.Pointer, value unsafe.Pointer, fla
 
 func deleteMap(mapFD int, key unsafe.Pointer) error {
 	return mapOperation(bpfMapDeleteElem, mapFD, key, nil, 0)
+}
+
+func lookupAndDeleteMap(mapFD int, key unsafe.Pointer, value unsafe.Pointer) error {
+	return mapOperation(bpfMapLookupAndDeleteElem, mapFD, key, value, 0)
 }
 
 func mapOperation(command uintptr, mapFD int, key unsafe.Pointer, value unsafe.Pointer, flags uint64) error {

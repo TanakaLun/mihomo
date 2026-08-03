@@ -18,43 +18,6 @@ type localRoute struct {
 	route netlink.Route
 }
 
-type routeGetFunc func(net.IP, *netlink.RouteGetOptions) ([]netlink.Route, error)
-
-func restoreOriginalSource(source netip.AddrPort, destination netip.Addr, uid uint32) (netip.AddrPort, error) {
-	return restoreOriginalSourceWithRouteGet(source, destination, uid, netlink.RouteGetWithOptions)
-}
-
-func restoreOriginalSourceWithRouteGet(
-	source netip.AddrPort,
-	destination netip.Addr,
-	uid uint32,
-	routeGet routeGetFunc,
-) (netip.AddrPort, error) {
-	if source.Addr().IsValid() && !source.Addr().IsLoopback() && !source.Addr().IsUnspecified() {
-		return source, nil
-	}
-	destination = destination.Unmap()
-	if !destination.IsValid() {
-		return source, E.New("invalid original destination")
-	}
-	routes, err := routeGet(net.IP(destination.AsSlice()), &netlink.RouteGetOptions{UID: &uid})
-	if err != nil {
-		return source, E.Cause(err, "lookup original source route")
-	}
-	for _, route := range routes {
-		address, loaded := netip.AddrFromSlice(route.Src)
-		if !loaded {
-			continue
-		}
-		address = address.Unmap()
-		if address.IsUnspecified() || address.IsLoopback() || address.BitLen() != destination.BitLen() {
-			continue
-		}
-		return netip.AddrPortFrom(address, source.Port()), nil
-	}
-	return source, E.New("original source route has no usable source address")
-}
-
 func (i *Inbound) setupLocalRoutes() error {
 	prefixes := make([]netip.Prefix, 0, 2)
 	if i.redirectIPv4Prefix.IsValid() {

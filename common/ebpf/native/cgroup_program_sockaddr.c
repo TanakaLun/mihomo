@@ -11,6 +11,7 @@ static int build_ipv4_sock_addr_prog(
     int tcp_redirect_map_fd,
     int udp_redirect_map_fd,
     int udp_token_map_fd,
+    int udp_flow_map_fd,
     int udp_peer_map_fd,
     int bypass_socket_cookie_map_fd,
     int bypass_ipv4_cidr_map_fd,
@@ -57,6 +58,8 @@ static int build_ipv4_sock_addr_prog(
     if (attach_type == BPF_CGROUP_UDP4_SENDMSG && protocol == SB_EBPF_PROTO_UDP && !protocol_from_context) {
         emit_udp_connected_token_restore_v4(
             &b, udp_token_map_fd, listen_port, allow_jumps, &allow_jump_count);
+        emit_udp_flow_cache_restore_v4(
+            &b, udp_flow_map_fd, listen_port, allow_jumps, &allow_jump_count);
         emit_udp_peer_cache_restore_v4(&b, udp_peer_map_fd);
     }
     size_t dns_hijack_jumps[2];
@@ -76,6 +79,7 @@ static int build_ipv4_sock_addr_prog(
         tcp_redirect_map_fd,
         udp_redirect_map_fd,
         udp_token_map_fd,
+        udp_flow_map_fd,
         protocol,
         protocol_from_context,
         listen_port,
@@ -115,6 +119,7 @@ static int build_ipv6_sock_addr_prog(
     int tcp_redirect_map_fd,
     int udp_redirect_map_fd,
     int udp_token_map_fd,
+    int udp_flow_map_fd,
     int udp_peer_map_fd,
     int bypass_socket_cookie_map_fd,
     int bypass_ipv4_cidr_map_fd,
@@ -153,6 +158,8 @@ static int build_ipv6_sock_addr_prog(
     if (attach_type == BPF_CGROUP_UDP6_SENDMSG && protocol == SB_EBPF_PROTO_UDP && !protocol_from_context) {
         emit_udp_connected_token_restore_v6(
             &b, udp_token_map_fd, listen_port, allow_jumps, &allow_jump_count);
+        emit_udp_flow_cache_restore_v6(
+            &b, udp_flow_map_fd, listen_port, allow_jumps, &allow_jump_count);
     }
     bool emitted_v4mapped_branch = false;
     if (config->disable_ipv4) {
@@ -170,6 +177,7 @@ static int build_ipv6_sock_addr_prog(
             tcp_redirect_map_fd,
             udp_redirect_map_fd,
             udp_token_map_fd,
+            udp_flow_map_fd,
             udp_peer_map_fd,
             bypass_ipv4_cidr_map_fd,
             protocol,
@@ -229,6 +237,7 @@ static int build_ipv6_sock_addr_prog(
         tcp_redirect_map_fd,
         udp_redirect_map_fd,
         udp_token_map_fd,
+        udp_flow_map_fd,
         protocol,
         protocol_from_context,
         listen_port,
@@ -268,6 +277,7 @@ static int build_ipv4_mapped_ipv6_sock_addr_prog(
     int tcp_redirect_map_fd,
     int udp_redirect_map_fd,
     int udp_token_map_fd,
+    int udp_flow_map_fd,
     int udp_peer_map_fd,
     int bypass_socket_cookie_map_fd,
     int bypass_ipv4_cidr_map_fd,
@@ -305,6 +315,8 @@ static int build_ipv4_mapped_ipv6_sock_addr_prog(
     if (attach_type == BPF_CGROUP_UDP6_SENDMSG && protocol == SB_EBPF_PROTO_UDP && !protocol_from_context) {
         emit_udp_connected_token_restore_v6(
             &b, udp_token_map_fd, listen_port, allow_jumps, &allow_jump_count);
+        emit_udp_flow_cache_restore_v6(
+            &b, udp_flow_map_fd, listen_port, allow_jumps, &allow_jump_count);
     }
     (void)emit_ipv4_mapped_ipv6_branch(
         &b,
@@ -312,6 +324,7 @@ static int build_ipv4_mapped_ipv6_sock_addr_prog(
         tcp_redirect_map_fd,
         udp_redirect_map_fd,
         udp_token_map_fd,
+        udp_flow_map_fd,
         udp_peer_map_fd,
         bypass_ipv4_cidr_map_fd,
         protocol,

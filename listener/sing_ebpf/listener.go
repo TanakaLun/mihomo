@@ -260,6 +260,7 @@ func (i *Inbound) socketControl(ipv6 bool) func(network, address string, rawConn
 	return func(network, address string, rawConn syscall.RawConn) error {
 		if ipv6 {
 			if err := rawConn.Control(func(fd uintptr) {
+				_ = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
 				_ = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_V6ONLY, 1)
 				if strings.HasPrefix(network, "udp") {
 					_ = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_RECVPKTINFO, 1)

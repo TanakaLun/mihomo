@@ -30,6 +30,15 @@ static int create_udp_token_map(uint32_t max_entries, bool use_lru) {
         0U);
 }
 
+static int create_udp_flow_map(uint32_t max_entries) {
+    return sb_ebpf_create_map(
+        (enum bpf_map_type)SB_EBPF_LRU_HASH_MAP_TYPE,
+        sizeof(struct sb_ebpf_udp_flow_key),
+        sizeof(struct sb_ebpf_listener_key),
+        max_entries,
+        0U);
+}
+
 static int create_bypass_socket_cookie_map(uint32_t max_entries) {
     return sb_ebpf_create_map(
         (enum bpf_map_type)SB_EBPF_LRU_HASH_MAP_TYPE,
@@ -107,6 +116,10 @@ int sb_ebpf_cgroup_prepare(
         : -1;
     runtime->udp_peer_map_fd = enable_udp
         ? create_udp_peer_map(udp_redirect_map_capacity)
+        : -1;
+    /* This cache is an optimization. Keep the original path on older kernels. */
+    runtime->udp_flow_map_fd = enable_udp && runtime->socket_release_supported
+        ? create_udp_flow_map(udp_redirect_map_capacity)
         : -1;
     runtime->bypass_socket_cookie_map_fd = create_bypass_socket_cookie_map(
         socket_bypass_map_capacity);
@@ -280,6 +293,7 @@ int sb_ebpf_cgroup_close(struct sb_ebpf_cgroup_runtime *runtime) {
     close_runtime_fd(&runtime->bypass_ipv4_cidr_map_fd, &result, &saved_errno);
     close_runtime_fd(&runtime->bypass_socket_cookie_map_fd, &result, &saved_errno);
     close_runtime_fd(&runtime->udp_peer_map_fd, &result, &saved_errno);
+    close_runtime_fd(&runtime->udp_flow_map_fd, &result, &saved_errno);
     close_runtime_fd(&runtime->udp_token_map_fd, &result, &saved_errno);
     close_runtime_fd(&runtime->udp_redirect_map_fd, &result, &saved_errno);
     close_runtime_fd(&runtime->tcp_redirect_map_fd, &result, &saved_errno);

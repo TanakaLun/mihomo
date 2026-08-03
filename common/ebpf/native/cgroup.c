@@ -63,6 +63,7 @@ enum {
     STACK_COOKIE_KEY = -232,
     STACK_UID_KEY = -240,
     STACK_BYPASS_CIDR_KEY = -272,
+    STACK_UDP_FLOW_KEY = -304,
 };
 
 struct bpf_builder {

@@ -58,6 +58,9 @@ static int load_cgroup_program_set(
 
     bool enable_tcp = runtime->tcp_redirect_map_fd >= 0;
     bool enable_udp = runtime->udp_redirect_map_fd >= 0;
+    int sockaddr_bypass_socket_cookie_map_fd = self_tgid == 0U
+        ? runtime->bypass_socket_cookie_map_fd
+        : -1;
     struct sb_ebpf_cgroup_config config;
     memset(&config, 0, sizeof(config));
     config.inbound_network =
@@ -82,8 +85,9 @@ static int load_cgroup_program_set(
             runtime->tcp_redirect_map_fd,
             runtime->udp_redirect_map_fd,
             runtime->udp_token_map_fd,
+            runtime->udp_flow_map_fd,
             runtime->udp_peer_map_fd,
-            runtime->bypass_socket_cookie_map_fd,
+            sockaddr_bypass_socket_cookie_map_fd,
             runtime->bypass_ipv4_cidr_map_fd,
             SB_EBPF_PROTO_TCP,
             true,
@@ -99,8 +103,9 @@ static int load_cgroup_program_set(
                 runtime->tcp_redirect_map_fd,
                 runtime->udp_redirect_map_fd,
                 runtime->udp_token_map_fd,
+                runtime->udp_flow_map_fd,
                 runtime->udp_peer_map_fd,
-                runtime->bypass_socket_cookie_map_fd,
+                sockaddr_bypass_socket_cookie_map_fd,
                 runtime->bypass_ipv4_cidr_map_fd,
                 SB_EBPF_PROTO_UDP,
                 false,
@@ -122,8 +127,9 @@ static int load_cgroup_program_set(
             runtime->tcp_redirect_map_fd,
             runtime->udp_redirect_map_fd,
             runtime->udp_token_map_fd,
+            runtime->udp_flow_map_fd,
             runtime->udp_peer_map_fd,
-            runtime->bypass_socket_cookie_map_fd,
+            sockaddr_bypass_socket_cookie_map_fd,
             runtime->bypass_ipv4_cidr_map_fd,
             runtime->bypass_ipv6_cidr_map_fd,
             SB_EBPF_PROTO_TCP,
@@ -140,8 +146,9 @@ static int load_cgroup_program_set(
                 runtime->tcp_redirect_map_fd,
                 runtime->udp_redirect_map_fd,
                 runtime->udp_token_map_fd,
+                runtime->udp_flow_map_fd,
                 runtime->udp_peer_map_fd,
-                runtime->bypass_socket_cookie_map_fd,
+                sockaddr_bypass_socket_cookie_map_fd,
                 runtime->bypass_ipv4_cidr_map_fd,
                 runtime->bypass_ipv6_cidr_map_fd,
                 SB_EBPF_PROTO_UDP,
@@ -163,8 +170,9 @@ static int load_cgroup_program_set(
             runtime->tcp_redirect_map_fd,
             runtime->udp_redirect_map_fd,
             runtime->udp_token_map_fd,
+            runtime->udp_flow_map_fd,
             runtime->udp_peer_map_fd,
-            runtime->bypass_socket_cookie_map_fd,
+            sockaddr_bypass_socket_cookie_map_fd,
             runtime->bypass_ipv4_cidr_map_fd,
             SB_EBPF_PROTO_TCP,
             true,
@@ -180,8 +188,9 @@ static int load_cgroup_program_set(
                 runtime->tcp_redirect_map_fd,
                 runtime->udp_redirect_map_fd,
                 runtime->udp_token_map_fd,
+                runtime->udp_flow_map_fd,
                 runtime->udp_peer_map_fd,
-                runtime->bypass_socket_cookie_map_fd,
+                sockaddr_bypass_socket_cookie_map_fd,
                 runtime->bypass_ipv4_cidr_map_fd,
                 SB_EBPF_PROTO_UDP,
                 false,

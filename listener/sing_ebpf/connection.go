@@ -13,8 +13,7 @@ import (
 
 	E "github.com/metacubex/sing/common/exceptions"
 
-	"golang.org/x/net/ipv4"
-	"golang.org/x/net/ipv6"
+	"golang.org/x/sys/unix"
 )
 
 func (i *Inbound) NewConnection(conn net.Conn) {
@@ -44,14 +43,8 @@ func (i *Inbound) NewConnection(conn net.Conn) {
 		Type:    C.EBPF,
 		DstIP:   original.Destination.Addr().Unmap(),
 		DstPort: original.Destination.Port(),
-	}
-	restored, restoreErr := restoreOriginalSource(sourceAddr, original.Destination.Addr(), original.UID)
-	if restoreErr != nil {
-		metadata.SrcIP = sourceAddr.Addr().Unmap()
-		metadata.SrcPort = sourceAddr.Port()
-	} else {
-		metadata.SrcIP = restored.Addr().Unmap()
-		metadata.SrcPort = restored.Port()
+		SrcIP:   sourceAddr.Addr().Unmap(),
+		SrcPort: sourceAddr.Port(),
 	}
 	inbound.ApplyAdditions(metadata, i.additions...)
 	i.tunnel.HandleTCPConn(conn, metadata)
@@ -69,7 +62,7 @@ func (i *Inbound) NewPacket(data []byte, oob []byte, source netip.AddrPort) {
 	}
 	client := source
 	redirectDestination := netip.AddrPortFrom(redirectAddress, i.listeners.selectedPort())
-	cached, loaded := i.udpClientTable.cachedOriginal(client, redirectAddress)
+	cached, bindingReady, loaded := i.udpClientTable.cachedPacketState(client, redirectAddress)
 	original := cached.original
 	if !loaded {
 		original, err = backend.LookupOriginal(ECommon.ProtocolUDP, redirectDestination)
@@ -78,14 +71,15 @@ func (i *Inbound) NewPacket(data []byte, oob []byte, source netip.AddrPort) {
 			return
 		}
 	}
-	releasedRedirects := i.udpClientTable.setBinding(
-		client,
-		original.Destination,
-		redirectAddress,
-		original.ConnectedUDP,
-		original.UID,
-	)
-	i.deleteUDPRedirects(releasedRedirects)
+	if !bindingReady {
+		releasedRedirects := i.udpClientTable.setBinding(
+			client,
+			original.Destination,
+			redirectAddress,
+			original.ConnectedUDP,
+		)
+		i.deleteUDPRedirects(releasedRedirects)
+	}
 
 	clientState := i.udpClientTable.loadOrCreate(client)
 	if original.ConnectedUDP {
@@ -99,12 +93,6 @@ func (i *Inbound) NewPacket(data []byte, oob []byte, source netip.AddrPort) {
 		DstPort: original.Destination.Port(),
 		SrcIP:   client.Addr().Unmap(),
 		SrcPort: client.Port(),
-	}
-	if clientState != nil {
-		if restored, restoreErr := restoreOriginalSource(client, original.Destination.Addr(), clientState.sourceUID()); restoreErr == nil {
-			metadata.SrcIP = restored.Addr().Unmap()
-			metadata.SrcPort = restored.Port()
-		}
 	}
 	inbound.ApplyAdditions(metadata, i.additions...)
 
@@ -159,8 +147,6 @@ func (p *udpPacket) LocalAddr() net.Addr {
 
 var _ C.UDPPacket = (*udpPacket)(nil)
 
-var _ C.UDPPacket = (*udpPacket)(nil)
-
 func (i *Inbound) deleteUDPRedirects(redirectAddresses []netip.Addr) {
 	if len(redirectAddresses) == 0 {
 		return
@@ -178,17 +164,28 @@ func (i *Inbound) deleteUDPRedirects(redirectAddresses []netip.Addr) {
 }
 
 func redirectAddressFromOOB(oob []byte) (netip.Addr, error) {
-	var controlMessage4 ipv4.ControlMessage
-	if err := controlMessage4.Parse(oob); err == nil {
-		if address, loaded := netip.AddrFromSlice(controlMessage4.Dst); loaded && address.Is4() {
-			return address.Unmap(), nil
+	for len(oob) > 0 {
+		header, data, remainder, err := unix.ParseOneSocketControlMessage(oob)
+		if err != nil {
+			return netip.Addr{}, E.Cause(err, "parse IP packet info")
 		}
-	}
-	var controlMessage6 ipv6.ControlMessage
-	if err := controlMessage6.Parse(oob); err == nil {
-		if address, loaded := netip.AddrFromSlice(controlMessage6.Dst); loaded && address.Is6() && !address.Is4In6() {
-			return address, nil
+		switch {
+		case header.Level == unix.IPPROTO_IP && header.Type == unix.IP_PKTINFO:
+			if len(data) < unix.SizeofInet4Pktinfo {
+				return netip.Addr{}, E.New("invalid IPv4 packet info length: ", len(data))
+			}
+			var address [4]byte
+			copy(address[:], data[8:12])
+			return netip.AddrFrom4(address), nil
+		case header.Level == unix.IPPROTO_IPV6 && header.Type == unix.IPV6_PKTINFO:
+			if len(data) < unix.SizeofInet6Pktinfo {
+				return netip.Addr{}, E.New("invalid IPv6 packet info length: ", len(data))
+			}
+			var address [16]byte
+			copy(address[:], data[:16])
+			return netip.AddrFrom16(address), nil
 		}
+		oob = remainder
 	}
 	return netip.Addr{}, E.New("IP packet info is missing")
 }

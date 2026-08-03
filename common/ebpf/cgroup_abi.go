@@ -58,7 +58,6 @@ func DefaultCgroupMapCapacity() CgroupMapCapacity {
 type OriginalDestination struct {
 	Destination  netip.AddrPort
 	ConnectedUDP bool
-	UID          uint32
 }
 
 type listenerLookupKey struct {
@@ -76,8 +75,25 @@ type originalDestinationValue struct {
 	Flags        uint8
 	Reserved     [3]byte
 	SocketCookie uint64
-	UID          uint32
-	ReservedTail uint32
+}
+
+type udpFlowKey struct {
+	SocketCookie uint64
+	Family       uint8
+	Protocol     uint8
+	Port         uint16
+	Addr         [16]byte
+	Reserved     [4]byte
+}
+
+func makeUDPFlowKey(original originalDestinationValue) udpFlowKey {
+	return udpFlowKey{
+		SocketCookie: original.SocketCookie,
+		Family:       original.Family,
+		Protocol:     ProtocolUDP,
+		Port:         original.Port,
+		Addr:         original.Addr,
+	}
 }
 
 func makeListenerLookupKey(protocol uint8, listenerDestination netip.AddrPort) (listenerLookupKey, error) {

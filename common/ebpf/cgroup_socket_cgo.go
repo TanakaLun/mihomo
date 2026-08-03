@@ -14,6 +14,18 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	mapLookupAndDeleteUnknown int32 = iota
+	mapLookupAndDeleteSupported
+	mapLookupAndDeleteUnsupported
+)
+
+// enotSupp is ENOTSUPP (errno 524). Linux uses a distinct value from
+// EOPNOTSUPP (95) and neither syscall nor x/sys/unix export ENOTSUPP; some
+// kernels return it for unsupported BPF commands such as
+// BPF_MAP_LOOKUP_AND_DELETE_ELEM.
+const enotSupp = syscall.Errno(524)
+
 func (b *CgroupBackend) SocketProtectFunc() control.Func {
 	if b == nil {
 		return nil
@@ -68,7 +80,11 @@ func (b *CgroupBackend) lookupOriginal(
 	if err != nil {
 		return OriginalDestination{}, err
 	}
-	err = lookupMap(redirectMap, unsafe.Pointer(&key), unsafe.Pointer(&original))
+	if deleteAfterLookup {
+		err = b.takeMapElement(redirectMap, unsafe.Pointer(&key), unsafe.Pointer(&original))
+	} else {
+		err = lookupMap(redirectMap, unsafe.Pointer(&key), unsafe.Pointer(&original))
+	}
 	if err != nil {
 		return OriginalDestination{}, E.Cause(err, "lookup original destination")
 	}
@@ -81,17 +97,39 @@ func (b *CgroupBackend) lookupOriginal(
 	default:
 		return OriginalDestination{}, E.New("invalid original destination family: ", original.Family)
 	}
-	if deleteAfterLookup {
-		err = deleteMap(redirectMap, unsafe.Pointer(&key))
-		if err != nil && !errors.Is(err, unix.ENOENT) {
-			return OriginalDestination{}, E.Cause(err, "delete consumed redirect mapping")
-		}
-	}
 	return OriginalDestination{
 		Destination:  netip.AddrPortFrom(address.Unmap(), original.Port),
 		ConnectedUDP: original.Flags&1 != 0,
-		UID:          original.UID,
 	}, nil
+}
+
+func (b *CgroupBackend) takeMapElement(mapFD int, key unsafe.Pointer, value unsafe.Pointer) error {
+	if b.lookupAndDeleteMode.Load() != mapLookupAndDeleteUnsupported {
+		err := lookupAndDeleteMap(mapFD, key, value)
+		if err == nil || errors.Is(err, unix.ENOENT) {
+			b.lookupAndDeleteMode.Store(mapLookupAndDeleteSupported)
+			return err
+		}
+		if !mapLookupAndDeleteUnavailable(err) {
+			return err
+		}
+		b.lookupAndDeleteMode.Store(mapLookupAndDeleteUnsupported)
+	}
+	if err := lookupMap(mapFD, key, value); err != nil {
+		return err
+	}
+	err := deleteMap(mapFD, key)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	return err
+}
+
+func mapLookupAndDeleteUnavailable(err error) bool {
+	return errors.Is(err, unix.ENOSYS) ||
+		errors.Is(err, unix.EINVAL) ||
+		errors.Is(err, unix.EOPNOTSUPP) ||
+		errors.Is(err, enotSupp)
 }
 
 func (b *CgroupBackend) DeleteRedirect(protocol uint8, listenerDestination netip.AddrPort) error {
@@ -110,6 +148,19 @@ func (b *CgroupBackend) DeleteRedirect(protocol uint8, listenerDestination netip
 	redirectMap, err := b.redirectMap(protocol)
 	if err != nil {
 		return err
+	}
+	if protocol == ProtocolUDP && b.udpFlowMapFD >= 0 {
+		var original originalDestinationValue
+		lookupErr := lookupMap(redirectMap, unsafe.Pointer(&key), unsafe.Pointer(&original))
+		if lookupErr == nil && original.SocketCookie != 0 {
+			flowKey := makeUDPFlowKey(original)
+			flowErr := deleteMap(b.udpFlowMapFD, unsafe.Pointer(&flowKey))
+			if flowErr != nil && !errors.Is(flowErr, unix.ENOENT) {
+				return E.Cause(flowErr, "delete UDP flow cache")
+			}
+		} else if lookupErr != nil && !errors.Is(lookupErr, unix.ENOENT) {
+			return E.Cause(lookupErr, "lookup UDP flow cache key")
+		}
 	}
 	err = deleteMap(redirectMap, unsafe.Pointer(&key))
 	if errors.Is(err, unix.ENOENT) {

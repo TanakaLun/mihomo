@@ -24,7 +24,6 @@ type udpClientTable struct {
 type udpClientState struct {
 	access     sync.RWMutex
 	connected  bool
-	uid        uint32
 	lastActive time.Time
 	bindings   map[netip.AddrPort]udpRedirectBinding
 	originals  map[netip.Addr]udpOriginalDestination
@@ -87,14 +86,30 @@ func (t *udpClientTable) touch(client netip.AddrPort, now time.Time) {
 }
 
 func (t *udpClientTable) cachedOriginal(client netip.AddrPort, redirectAddress netip.Addr) (udpOriginalDestination, bool) {
+	original, _, loaded := t.cachedPacketState(client, redirectAddress)
+	return original, loaded
+}
+
+func (t *udpClientTable) cachedPacketState(
+	client netip.AddrPort,
+	redirectAddress netip.Addr,
+) (udpOriginalDestination, bool, bool) {
 	clientState, loaded := t.load(client)
 	if !loaded {
-		return udpOriginalDestination{}, false
+		return udpOriginalDestination{}, false, false
 	}
 	clientState.access.RLock()
 	original, loaded := clientState.originals[redirectAddress]
+	if !loaded {
+		clientState.access.RUnlock()
+		return udpOriginalDestination{}, false, false
+	}
+	binding, bindingLoaded := clientState.bindings[original.original.Destination]
+	bindingReady := bindingLoaded &&
+		binding.address == redirectAddress &&
+		binding.connected == original.original.ConnectedUDP
 	clientState.access.RUnlock()
-	return original, loaded
+	return original, bindingReady, true
 }
 
 func (t *udpClientTable) setBinding(
@@ -102,7 +117,6 @@ func (t *udpClientTable) setBinding(
 	destination netip.AddrPort,
 	redirectAddress netip.Addr,
 	connected bool,
-	uid uint32,
 ) []netip.Addr {
 	releases := t.setBindingState(
 		client,
@@ -112,7 +126,6 @@ func (t *udpClientTable) setBinding(
 			original: ECommon.OriginalDestination{
 				Destination:  destination,
 				ConnectedUDP: connected,
-				UID:          uid,
 			},
 		},
 	)
@@ -157,19 +170,16 @@ func (t *udpClientTable) setClientBinding(
 ) []udpRedirectRelease {
 	destination := original.original.Destination
 	connected := original.original.ConnectedUDP
-	uid := original.original.UID
 	clientState.access.RLock()
 	current, loaded := clientState.bindings[destination]
-	uidMatches := clientState.uid == uid
 	clientState.access.RUnlock()
-	if loaded && current.address == redirectAddress && current.connected == connected && uidMatches {
+	if loaded && current.address == redirectAddress && current.connected == connected {
 		return nil
 	}
 
 	clientState.access.Lock()
 	defer clientState.access.Unlock()
 	current, loaded = clientState.bindings[destination]
-	clientState.uid = uid
 	clientState.lastActive = time.Now()
 	clientState.originals[redirectAddress] = original
 	if loaded && current.address == redirectAddress && current.connected == connected {
@@ -290,13 +300,6 @@ func (s *udpClientState) isConnected() bool {
 	connected := s.connected
 	s.access.RUnlock()
 	return connected
-}
-
-func (s *udpClientState) sourceUID() uint32 {
-	s.access.RLock()
-	uid := s.uid
-	s.access.RUnlock()
-	return uid
 }
 
 func sourcePacketInfo(address netip.Addr) []byte {
