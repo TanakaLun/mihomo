@@ -21,7 +21,7 @@ permissions:
 
 env:
   UPSTREAM_REPO: MetaCubeX/mihomo
-  FEATURE_BRANCH: ebpf-inbound
+  FEATURE_BRANCH: Alpha
 
 jobs:
   sync:
