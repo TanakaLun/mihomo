@@ -2,13 +2,13 @@
 
 Source repository: `TanakaLun/mihomo`, branch `ebpf-inbound`.
 Target baseline: `MetaCubeX/mihomo`, branch `Alpha`.
-Target feature branch: `ebpf-inbound`.
+Deployed branch: `Alpha` (`ebpf-inbound` was merged into `Alpha` and the temporary branch was removed).
 
 Baselines:
 
 - Upstream: `Alpha` at `1af24e989c157dd506f0456b859e5bb5f3166bc1`
 - Downstream before rebase: `ebpf-inbound` at `b1843ef975d23e73616d1610cbb47efb62d3214d`
-- Downstream after rebase: `ebpf-inbound` at `d2937811` before the documentation/CI commits in this task
+- Downstream after rebase: `ebpf-inbound` at `d2937811` before the documentation/CI commits; merged into `Alpha`
 
 ## Migration decision
 

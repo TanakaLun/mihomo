@@ -21,7 +21,7 @@ permissions:
 
 env:
   UPSTREAM_REPO: MetaCubeX/mihomo
-  FEATURE_BRANCH: ebpf-inbound
+  FEATURE_BRANCH: Alpha
 
 jobs:
   sync:
@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ebpf-inbound
+          ref: Alpha
 
       - name: Resolve upstream branch
         id: vars
@@ -91,9 +91,9 @@ jobs:
           body="Automated upstream integration.\\n\\nUpstream: ${{ steps.vars.outputs.branch }} @ ${upstream_sha}\\nCandidate: ${candidate} @ ${downstream_sha}\\nRun: ${{ steps.vars.outputs.run_url }}\\n\\nMerge only after required checks pass."
           pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "${candidate}" --json number -q '.[0].number' 2>/dev/null || true)"
           if [ -z "${pr_number}" ]; then
-            gh pr create --repo "$GITHUB_REPOSITORY" --base "$FEATURE_BRANCH" --head "${candidate}" --title "chore: sync upstream into eBPF branch" --body "${body}"
+            gh pr create --repo "$GITHUB_REPOSITORY" --base "$FEATURE_BRANCH" --head "${candidate}" --title "chore: sync upstream into Alpha branch" --body "${body}"
           else
-            gh pr edit "${pr_number}" --repo "$GITHUB_REPOSITORY" --title "chore: sync upstream into eBPF branch" --body "${body}"
+            gh pr edit "${pr_number}" --repo "$GITHUB_REPOSITORY" --title "chore: sync upstream into Alpha branch" --body "${body}"
           fi
 
       - name: Close stale sync failure issues
@@ -121,7 +121,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ebpf-inbound
+          ref: Alpha
 
       - name: Resolve upstream branch
         id: vars
