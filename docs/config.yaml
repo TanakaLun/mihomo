@@ -130,6 +130,22 @@ profile: # 存储 select 选择记录
   # 持久化 fake-ip
   store-fake-ip: true
 
+# 流量统计记录(累积流量 / 各目标聚合)
+traffic-records:
+  # 数据库文件路径,留空则使用 {homedir}/traffic.db
+  database-file: ""
+
+  # 累积流量(跨重启的总上行/下行字节数)
+  cumulative:
+    enable: false
+    save-interval: 3 # 自动保存间隔(秒)
+
+  # 各 ip/URL 聚合:记录每个(目标, 进程)的访问次数与总流量
+  destination:
+    enable: false
+    max-records: 10000 # 聚合条目上限,0 或负数 = 无上限(全部保留)
+    save-interval: 3   # 自动保存间隔(秒)
+
 # Tun 配置
 tun:
   enable: false

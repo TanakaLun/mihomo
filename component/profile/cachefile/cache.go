@@ -23,11 +23,15 @@ var (
 	bucketETag             = []byte("etag")
 	bucketSubscriptionInfo = []byte("subscriptioninfo")
 	bucketStorage          = []byte("storage")
+	bucketTraffic          = []byte("traffic")
+	bucketTrafficDest      = []byte("traffic-dest")
 )
 
 // CacheFile store and update the cache file
 type CacheFile struct {
-	DB *bbolt.DB
+	DB            *bbolt.DB
+	trafficDB     *bbolt.DB
+	trafficDBPath string
 }
 
 func (c *CacheFile) SetSelected(group, selected string) {
@@ -74,6 +78,9 @@ func (c *CacheFile) SelectedMap() map[string]string {
 }
 
 func (c *CacheFile) Close() error {
+	if c.trafficDB != nil {
+		c.trafficDB.Close()
+	}
 	return c.DB.Close()
 }
 

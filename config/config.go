@@ -181,6 +181,26 @@ type Profile struct {
 	StoreFakeIP   bool
 }
 
+// TrafficRecords config
+type TrafficRecords struct {
+	DatabaseFile string
+	Cumulative   *TrafficCumulative
+	Destination  *TrafficDestination
+}
+
+// TrafficCumulative config
+type TrafficCumulative struct {
+	Enable       bool
+	SaveInterval int
+}
+
+// TrafficDestination config
+type TrafficDestination struct {
+	Enable       bool
+	SaveInterval int
+	MaxRecords   int
+}
+
 // TLS config
 type TLS struct {
 	Certificate     string
@@ -193,24 +213,25 @@ type TLS struct {
 
 // Config is mihomo config manager
 type Config struct {
-	General       *General
-	Controller    *Controller
-	Experimental  *Experimental
-	IPTables      *IPTables
-	NTP           *NTP
-	DNS           *DNS
-	Hosts         *trie.DomainTrie[resolver.HostValue]
-	Profile       *Profile
-	Rules         []C.Rule
-	SubRules      map[string][]C.Rule
-	Users         []auth.AuthUser
-	Proxies       map[string]C.Proxy
-	Listeners     map[string]C.InboundListener
-	Providers     map[string]P.ProxyProvider
-	RuleProviders map[string]P.RuleProvider
-	Tunnels       []LC.Tunnel
-	Sniffer       *sniffer.Config
-	TLS           *TLS
+	General        *General
+	Controller     *Controller
+	Experimental   *Experimental
+	IPTables       *IPTables
+	NTP            *NTP
+	DNS            *DNS
+	Hosts          *trie.DomainTrie[resolver.HostValue]
+	Profile        *Profile
+	TrafficRecords *TrafficRecords
+	Rules          []C.Rule
+	SubRules       map[string][]C.Rule
+	Users          []auth.AuthUser
+	Proxies        map[string]C.Proxy
+	Listeners      map[string]C.InboundListener
+	Providers      map[string]P.ProxyProvider
+	RuleProviders  map[string]P.RuleProvider
+	Tunnels        []LC.Tunnel
+	Sniffer        *sniffer.Config
+	TLS            *TLS
 }
 
 type RawCors struct {
@@ -360,6 +381,23 @@ type RawProfile struct {
 	StoreFakeIP   bool `yaml:"store-fake-ip" json:"store-fake-ip"`
 }
 
+type RawTrafficRecords struct {
+	DatabaseFile string                `yaml:"database-file" json:"database-file"`
+	Cumulative   RawTrafficCumulative  `yaml:"cumulative" json:"cumulative"`
+	Destination  RawTrafficDestination `yaml:"destination" json:"destination"`
+}
+
+type RawTrafficCumulative struct {
+	Enable       bool `yaml:"enable" json:"enable"`
+	SaveInterval int  `yaml:"save-interval" json:"save-interval"`
+}
+
+type RawTrafficDestination struct {
+	Enable       bool `yaml:"enable" json:"enable"`
+	SaveInterval int  `yaml:"save-interval" json:"save-interval"`
+	MaxRecords   int  `yaml:"max-records" json:"max-records"`
+}
+
 type RawGeoXUrl struct {
 	GeoIp   string `yaml:"geoip" json:"geoip"`
 	Mmdb    string `yaml:"mmdb" json:"mmdb"`
@@ -444,24 +482,25 @@ type RawConfig struct {
 	KeepAliveInterval             int                     `yaml:"keep-alive-interval" json:"keep-alive-interval"`
 	DisableKeepAlive              bool                    `yaml:"disable-keep-alive" json:"disable-keep-alive"`
 
-	ProxyProvider map[string]map[string]any `yaml:"proxy-providers" json:"proxy-providers"`
-	RuleProvider  map[string]map[string]any `yaml:"rule-providers" json:"rule-providers"`
-	Proxy         []map[string]any          `yaml:"proxies" json:"proxies"`
-	ProxyGroup    []map[string]any          `yaml:"proxy-groups" json:"proxy-groups"`
-	Rule          []string                  `yaml:"rules" json:"rule"`
-	SubRules      map[string][]string       `yaml:"sub-rules" json:"sub-rules"`
-	Listeners     []map[string]any          `yaml:"listeners" json:"listeners"`
-	Hosts         map[string]any            `yaml:"hosts" json:"hosts"`
-	DNS           RawDNS                    `yaml:"dns" json:"dns"`
-	NTP           RawNTP                    `yaml:"ntp" json:"ntp"`
-	Tun           RawTun                    `yaml:"tun" json:"tun"`
-	TuicServer    RawTuicServer             `yaml:"tuic-server" json:"tuic-server"`
-	IPTables      RawIPTables               `yaml:"iptables" json:"iptables"`
-	Experimental  RawExperimental           `yaml:"experimental" json:"experimental"`
-	Profile       RawProfile                `yaml:"profile" json:"profile"`
-	GeoXUrl       RawGeoXUrl                `yaml:"geox-url" json:"geox-url"`
-	Sniffer       RawSniffer                `yaml:"sniffer" json:"sniffer"`
-	TLS           RawTLS                    `yaml:"tls" json:"tls"`
+	ProxyProvider  map[string]map[string]any `yaml:"proxy-providers" json:"proxy-providers"`
+	RuleProvider   map[string]map[string]any `yaml:"rule-providers" json:"rule-providers"`
+	Proxy          []map[string]any          `yaml:"proxies" json:"proxies"`
+	ProxyGroup     []map[string]any          `yaml:"proxy-groups" json:"proxy-groups"`
+	Rule           []string                  `yaml:"rules" json:"rule"`
+	SubRules       map[string][]string       `yaml:"sub-rules" json:"sub-rules"`
+	Listeners      []map[string]any          `yaml:"listeners" json:"listeners"`
+	Hosts          map[string]any            `yaml:"hosts" json:"hosts"`
+	DNS            RawDNS                    `yaml:"dns" json:"dns"`
+	NTP            RawNTP                    `yaml:"ntp" json:"ntp"`
+	Tun            RawTun                    `yaml:"tun" json:"tun"`
+	TuicServer     RawTuicServer             `yaml:"tuic-server" json:"tuic-server"`
+	IPTables       RawIPTables               `yaml:"iptables" json:"iptables"`
+	Experimental   RawExperimental           `yaml:"experimental" json:"experimental"`
+	Profile        RawProfile                `yaml:"profile" json:"profile"`
+	GeoXUrl        RawGeoXUrl                `yaml:"geox-url" json:"geox-url"`
+	Sniffer        RawSniffer                `yaml:"sniffer" json:"sniffer"`
+	TLS            RawTLS                    `yaml:"tls" json:"tls"`
+	TrafficRecords RawTrafficRecords         `yaml:"traffic-records" json:"traffic-records"`
 
 	ClashForAndroid RawClashForAndroid `yaml:"clash-for-android" json:"clash-for-android"`
 }
@@ -575,6 +614,18 @@ func DefaultRawConfig() *RawConfig {
 		Profile: RawProfile{
 			StoreSelected: true,
 		},
+		TrafficRecords: RawTrafficRecords{
+			DatabaseFile: "",
+			Cumulative: RawTrafficCumulative{
+				Enable:       false,
+				SaveInterval: 3,
+			},
+			Destination: RawTrafficDestination{
+				Enable:       false,
+				SaveInterval: 3,
+				MaxRecords:   10000,
+			},
+		},
 		GeoXUrl: RawGeoXUrl{
 			Mmdb:    "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb",
 			ASN:     "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb",
@@ -662,6 +713,12 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 		return nil, err
 	}
 	config.Profile = profile
+
+	trafficRecords, err := parseTrafficRecords(rawCfg)
+	if err != nil {
+		return nil, err
+	}
+	config.TrafficRecords = trafficRecords
 
 	tlsCfg, err := parseTLS(rawCfg)
 	if err != nil {
@@ -857,6 +914,21 @@ func parseProfile(cfg *RawConfig) (*Profile, error) {
 	return &Profile{
 		StoreSelected: cfg.Profile.StoreSelected,
 		StoreFakeIP:   cfg.Profile.StoreFakeIP,
+	}, nil
+}
+
+func parseTrafficRecords(cfg *RawConfig) (*TrafficRecords, error) {
+	return &TrafficRecords{
+		DatabaseFile: cfg.TrafficRecords.DatabaseFile,
+		Cumulative: &TrafficCumulative{
+			Enable:       cfg.TrafficRecords.Cumulative.Enable,
+			SaveInterval: cfg.TrafficRecords.Cumulative.SaveInterval,
+		},
+		Destination: &TrafficDestination{
+			Enable:       cfg.TrafficRecords.Destination.Enable,
+			SaveInterval: cfg.TrafficRecords.Destination.SaveInterval,
+			MaxRecords:   cfg.TrafficRecords.Destination.MaxRecords,
+		},
 	}, nil
 }
 

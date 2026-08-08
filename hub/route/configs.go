@@ -1,12 +1,14 @@
 package route
 
 import (
+	"encoding/json"
 	"net/netip"
 	"path/filepath"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/process"
+	"github.com/metacubex/mihomo/component/profile"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/component/updater"
 	"github.com/metacubex/mihomo/config"
@@ -57,6 +59,12 @@ type configSchema struct {
 	TcpConcurrent     *bool                    `json:"tcp-concurrent"`
 	FindProcessMode   *process.FindProcessMode `json:"find-process-mode"`
 	InterfaceName     *string                  `json:"interface-name"`
+	TrafficRecords    *trafficRecordsSchema    `json:"traffic-records"`
+}
+
+type trafficRecordsSchema struct {
+	Cumulative  *bool `json:"cumulative"`
+	Destination *bool `json:"destination"`
 }
 
 type tunSchema struct {
@@ -128,7 +136,15 @@ type tuicServerSchema struct {
 
 func getConfigs(w http.ResponseWriter, r *http.Request) {
 	general := executor.GetGeneral()
-	render.JSON(w, r, general)
+	response := map[string]any{
+		"traffic-records": render.M{
+			"cumulative":  profile.StoreTrafficCumulative.Load(),
+			"destination": profile.StoreTrafficDestination.Load(),
+		},
+	}
+	b, _ := json.Marshal(general)
+	json.Unmarshal(b, &response)
+	render.JSON(w, r, response)
 }
 
 func pointerOrDefault[T any](p *T, def T) T {
@@ -383,6 +399,17 @@ func patchConfigs(w http.ResponseWriter, r *http.Request) {
 
 	if general.IPv6 != nil {
 		resolver.DisableIPv6 = !*general.IPv6
+	}
+
+	if general.TrafficRecords != nil {
+		var cumulative, destination *bool
+		if general.TrafficRecords.Cumulative != nil {
+			cumulative = general.TrafficRecords.Cumulative
+		}
+		if general.TrafficRecords.Destination != nil {
+			destination = general.TrafficRecords.Destination
+		}
+		executor.UpdateTrafficRecords(cumulative, destination)
 	}
 
 	render.NoContent(w, r)
