@@ -9,8 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,8 +17,6 @@ import (
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
-	"github.com/metacubex/mihomo/component/profile"
-	"github.com/metacubex/mihomo/component/profile/cachefile"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp"
@@ -50,12 +46,10 @@ func SetEmbedMode(embed bool) {
 }
 
 type Traffic struct {
-	Up             int64 `json:"up"`
-	Down           int64 `json:"down"`
-	UpTotal        int64 `json:"upTotal"`
-	DownTotal      int64 `json:"downTotal"`
-	UpCumulative   int64 `json:"upCumulative"`
-	DownCumulative int64 `json:"downCumulative"`
+	Up        int64 `json:"up"`
+	Down      int64 `json:"down"`
+	UpTotal   int64 `json:"upTotal"`
+	DownTotal int64 `json:"downTotal"`
 }
 
 type Memory struct {
@@ -129,10 +123,6 @@ func router(isDebug bool, secret string, dohServer string, cors Cors) *chi.Mux {
 		r.Get("/", hello)
 		r.Get("/logs", getLogs)
 		r.Get("/traffic", traffic)
-		r.Get("/traffic/cumulative", getCumulativeTraffic)
-		r.Delete("/traffic/cumulative", resetCumulativeTraffic)
-		r.Get("/traffic/destinations", getDestinationTraffic)
-		r.Delete("/traffic/destinations", resetDestinationTraffic)
 		r.Get("/memory", memory)
 		r.Get("/version", version)
 		r.Mount("/configs", configRouter())
@@ -402,14 +392,11 @@ func traffic(w http.ResponseWriter, r *http.Request) {
 		buf.Reset()
 		up, down := t.Now()
 		upTotal, downTotal := t.Total()
-		upCumulative, downCumulative := t.CumulativeTotal()
 		if err := json.NewEncoder(buf).Encode(Traffic{
-			Up:             up,
-			Down:           down,
-			UpTotal:        upTotal,
-			DownTotal:      downTotal,
-			UpCumulative:   upCumulative,
-			DownCumulative: downCumulative,
+			Up:        up,
+			Down:      down,
+			UpTotal:   upTotal,
+			DownTotal: downTotal,
 		}); err != nil {
 			break
 		}
@@ -584,132 +571,4 @@ func getLogs(w http.ResponseWriter, r *http.Request) {
 
 func version(w http.ResponseWriter, r *http.Request) {
 	render.JSON(w, r, render.M{"meta": C.Meta, "version": C.Version})
-}
-
-func getCumulativeTraffic(w http.ResponseWriter, r *http.Request) {
-	if !profile.StoreTrafficCumulative.Load() {
-		render.Status(r, http.StatusNotFound)
-		render.JSON(w, r, newError("traffic cumulative is disabled"))
-		return
-	}
-
-	up, down := statistic.DefaultManager.CumulativeTotal()
-	render.JSON(w, r, render.M{
-		"upCumulative":   up,
-		"downCumulative": down,
-	})
-}
-
-func resetCumulativeTraffic(w http.ResponseWriter, r *http.Request) {
-	if !profile.StoreTrafficCumulative.Load() {
-		render.Status(r, http.StatusNotFound)
-		render.JSON(w, r, newError("traffic cumulative is disabled"))
-		return
-	}
-
-	statistic.DefaultManager.ResetCumulative()
-	up, down := statistic.DefaultManager.CumulativeTotal()
-	cachefile.Cache().StoreCumulativeTraffic(up, down)
-	render.NoContent(w, r)
-}
-
-func getDestinationTraffic(w http.ResponseWriter, r *http.Request) {
-	if !profile.StoreTrafficDestination.Load() {
-		render.Status(r, http.StatusNotFound)
-		render.JSON(w, r, newError("traffic destination records is disabled"))
-		return
-	}
-
-	records := statistic.DefaultManager.DestinationRecords()
-
-	host := r.URL.Query().Get("host")
-	if host != "" {
-		filtered := records[:0]
-		for _, record := range records {
-			if strings.Contains(record.Host, host) {
-				filtered = append(filtered, record)
-			}
-		}
-		records = filtered
-	}
-
-	order := r.URL.Query().Get("order")
-	desc := order == "desc"
-	switch r.URL.Query().Get("sort") {
-	case "upload":
-		sort.SliceStable(records, func(i, j int) bool {
-			if desc {
-				return records[i].UploadTotal > records[j].UploadTotal
-			}
-			return records[i].UploadTotal < records[j].UploadTotal
-		})
-	case "download":
-		sort.SliceStable(records, func(i, j int) bool {
-			if desc {
-				return records[i].DownloadTotal > records[j].DownloadTotal
-			}
-			return records[i].DownloadTotal < records[j].DownloadTotal
-		})
-	case "count":
-		sort.SliceStable(records, func(i, j int) bool {
-			if desc {
-				return records[i].VisitCount > records[j].VisitCount
-			}
-			return records[i].VisitCount < records[j].VisitCount
-		})
-	case "lastSeen":
-		sort.SliceStable(records, func(i, j int) bool {
-			if desc {
-				return records[i].LastSeen.After(records[j].LastSeen)
-			}
-			return records[i].LastSeen.Before(records[j].LastSeen)
-		})
-	default:
-		sort.SliceStable(records, func(i, j int) bool {
-			if desc {
-				return records[i].Host > records[j].Host
-			}
-			return records[i].Host < records[j].Host
-		})
-	}
-
-	total := len(records)
-
-	limit := 0
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	offset := 0
-	if v := r.URL.Query().Get("offset"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			offset = n
-		}
-	}
-
-	if offset > len(records) {
-		offset = len(records)
-	}
-	end := len(records)
-	if limit > 0 && offset+limit < end {
-		end = offset + limit
-	}
-
-	render.JSON(w, r, render.M{
-		"destinations": records[offset:end],
-		"total":        total,
-	})
-}
-
-func resetDestinationTraffic(w http.ResponseWriter, r *http.Request) {
-	if !profile.StoreTrafficDestination.Load() {
-		render.Status(r, http.StatusNotFound)
-		render.JSON(w, r, newError("traffic destination records is disabled"))
-		return
-	}
-
-	statistic.DefaultManager.ResetDestinations()
-	cachefile.Cache().ClearDestinationRecords()
-	render.NoContent(w, r)
 }

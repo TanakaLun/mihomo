@@ -40,7 +40,6 @@ import (
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp/ntp"
 	"github.com/metacubex/mihomo/tunnel"
-	"github.com/metacubex/mihomo/tunnel/statistic"
 )
 
 var mux sync.Mutex
@@ -119,7 +118,6 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	runtime.GC()
 	tunnel.OnRunning()
 	updateUpdater(cfg)
-	updateTrafficRecords(cfg)
 
 	resolver.ResetConnection()
 }
@@ -447,153 +445,6 @@ func updateProfile(cfg *config.Config) {
 	}
 }
 
-var (
-	trafficRecordsLock         sync.Mutex
-	lastTrafficRecords         *config.TrafficRecords
-	trafficCumulativeEnabled   bool
-	trafficDestinationEnabled  bool
-	trafficDestinationMaxEntry int
-)
-
-var defaultTrafficSaveInterval = 3 * time.Second
-
-// updateTrafficRecords applies the traffic-records config from a full config reload.
-func updateTrafficRecords(cfg *config.Config) {
-	if cfg == nil || cfg.TrafficRecords == nil {
-		return
-	}
-
-	trafficRecordsLock.Lock()
-	lastTrafficRecords = cfg.TrafficRecords
-	applyTrafficRecords()
-	trafficRecordsLock.Unlock()
-}
-
-// UpdateTrafficRecords applies runtime toggles for traffic-records sub features.
-func UpdateTrafficRecords(cumulative, destination *bool) {
-	trafficRecordsLock.Lock()
-	defer trafficRecordsLock.Unlock()
-
-	if lastTrafficRecords == nil {
-		return
-	}
-
-	records := *lastTrafficRecords
-	if cumulative != nil && records.Cumulative != nil {
-		c := *records.Cumulative
-		c.Enable = *cumulative
-		records.Cumulative = &c
-	}
-	if destination != nil && records.Destination != nil {
-		d := *records.Destination
-		d.Enable = *destination
-		records.Destination = &d
-	}
-	lastTrafficRecords = &records
-	applyTrafficRecords()
-}
-
-func trafficDestCacheMap(records []*statistic.DestinationRecord) map[string]*cachefile.DestinationRecord {
-	result := make(map[string]*cachefile.DestinationRecord, len(records))
-	for _, r := range records {
-		result[r.Host+"\x00"+r.Process] = &cachefile.DestinationRecord{
-			Host:          r.Host,
-			Process:       r.Process,
-			VisitCount:    r.VisitCount,
-			UploadTotal:   r.UploadTotal,
-			DownloadTotal: r.DownloadTotal,
-			LastSeen:      r.LastSeen,
-		}
-	}
-	return result
-}
-
-func trafficStatRecordMap(records map[string]*cachefile.DestinationRecord) map[string]*statistic.DestinationRecord {
-	result := make(map[string]*statistic.DestinationRecord, len(records))
-	for key, r := range records {
-		result[key] = &statistic.DestinationRecord{
-			Host:          r.Host,
-			Process:       r.Process,
-			VisitCount:    r.VisitCount,
-			UploadTotal:   r.UploadTotal,
-			DownloadTotal: r.DownloadTotal,
-			LastSeen:      r.LastSeen,
-		}
-	}
-	return result
-}
-
-// applyTrafficRecords starts/stops the traffic-records persistence pipeline.
-// Must be called with trafficRecordsLock held.
-func applyTrafficRecords() {
-	var (
-		cumulativeOn bool
-		destOn       bool
-		maxRecords   int
-		saveInterval = defaultTrafficSaveInterval
-	)
-	if lastTrafficRecords != nil {
-		if lastTrafficRecords.Cumulative != nil {
-			cumulativeOn = lastTrafficRecords.Cumulative.Enable
-			if lastTrafficRecords.Cumulative.SaveInterval > 0 {
-				saveInterval = time.Duration(lastTrafficRecords.Cumulative.SaveInterval) * time.Second
-			}
-		}
-		if lastTrafficRecords.Destination != nil {
-			destOn = lastTrafficRecords.Destination.Enable
-			maxRecords = lastTrafficRecords.Destination.MaxRecords
-			if lastTrafficRecords.Destination.SaveInterval > 0 {
-				saveInterval = time.Duration(lastTrafficRecords.Destination.SaveInterval) * time.Second
-			}
-		}
-	}
-
-	statistic.DefaultManager.StopAutoSave()
-
-	if !cumulativeOn && !destOn {
-		profile.StoreTrafficCumulative.Store(false)
-		profile.StoreTrafficDestination.Store(false)
-		statistic.DefaultManager.ResetDestinations()
-		cachefile.Cache().CloseTrafficDB()
-		trafficCumulativeEnabled = false
-		trafficDestinationEnabled = false
-		return
-	}
-
-	dbPath := cachefile.Cache().TrafficDBPath()
-	if lastTrafficRecords != nil && lastTrafficRecords.DatabaseFile != "" {
-		dbPath = lastTrafficRecords.DatabaseFile
-	}
-	cachefile.Cache().InitTrafficDB(dbPath)
-
-	if cumulativeOn && !trafficCumulativeEnabled {
-		up, down := cachefile.Cache().LoadCumulativeTraffic()
-		statistic.DefaultManager.SetCumulative(up, down)
-	}
-	profile.StoreTrafficCumulative.Store(cumulativeOn)
-
-	if destOn && !trafficDestinationEnabled {
-		loaded := cachefile.Cache().LoadDestinationRecords(maxRecords)
-		statistic.DefaultManager.RestoreDestinationRecords(trafficStatRecordMap(loaded))
-	}
-	profile.StoreTrafficDestination.Store(destOn)
-
-	statistic.DefaultManager.StartAutoSave(saveInterval, func() {
-		if profile.StoreTrafficCumulative.Load() {
-			up, down := statistic.DefaultManager.CumulativeTotal()
-			cachefile.Cache().StoreCumulativeTraffic(up, down)
-		}
-		if profile.StoreTrafficDestination.Load() {
-			records := statistic.DefaultManager.DestinationRecords()
-			cachefile.Cache().StoreDestinationRecords(trafficDestCacheMap(records), maxRecords)
-		}
-	})
-
-	trafficCumulativeEnabled = cumulativeOn
-	trafficDestinationEnabled = destOn
-	trafficDestinationMaxEntry = maxRecords
-}
-
 func patchSelectGroup(proxies map[string]C.Proxy) {
 	mapping := cachefile.Cache().SelectedMap()
 	if mapping == nil {
@@ -683,27 +534,5 @@ func Shutdown() {
 	tproxy.CleanupTProxyIPTables()
 	resolver.StoreFakePoolState()
 
-	trafficRecordsLock.Lock()
-	flushTrafficRecords()
-	trafficRecordsLock.Unlock()
-
 	log.Warnln("Mihomo shutting down")
-}
-
-// flushTrafficRecords persists in-memory state to the traffic db before exit.
-func flushTrafficRecords() {
-	if !trafficCumulativeEnabled && !trafficDestinationEnabled {
-		return
-	}
-
-	statistic.DefaultManager.StopAutoSave()
-	if trafficCumulativeEnabled {
-		up, down := statistic.DefaultManager.CumulativeTotal()
-		cachefile.Cache().StoreCumulativeTraffic(up, down)
-	}
-	if trafficDestinationEnabled {
-		records := statistic.DefaultManager.DestinationRecords()
-		cachefile.Cache().StoreDestinationRecords(trafficDestCacheMap(records), trafficDestinationMaxEntry)
-	}
-	cachefile.Cache().CloseTrafficDB()
 }
