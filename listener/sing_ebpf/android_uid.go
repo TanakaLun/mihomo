@@ -44,12 +44,12 @@ func (i *Inbound) resolveAndroidUIDPolicy() error {
 	warnSharedUID := make(map[uint32]struct{})
 	i.inspectAndroidPackages(packageManager, "include", i.androidUIDOptions.includePackage, warnSharedUID)
 	i.inspectAndroidPackages(packageManager, "exclude", i.androidUIDOptions.excludePackage, warnSharedUID)
-	includeUID, excludeUID := resolveAndroidUIDRanges(i.cgroupPolicy, i.androidUIDOptions, packageManager)
-	i.cgroupPolicy.IncludeUID = includeUID
-	i.cgroupPolicy.ExcludeUID = excludeUID
+	includeUID, excludeUID := resolveAndroidUIDRanges(i.localPolicy, i.androidUIDOptions, packageManager)
+	i.localPolicy.IncludeUID = includeUID
+	i.localPolicy.ExcludeUID = excludeUID
 	log.Infoln("[EBPF] resolved Android UID policy at startup: include_ranges=%d, exclude_ranges=%d",
-		len(i.cgroupPolicy.IncludeUID),
-		len(i.cgroupPolicy.ExcludeUID),
+		len(i.localPolicy.IncludeUID),
+		len(i.localPolicy.ExcludeUID),
 	)
 	return nil
 }
@@ -57,7 +57,7 @@ func (i *Inbound) resolveAndroidUIDPolicy() error {
 // resolveAndroidUIDRanges expands the Android user/package policy into concrete
 // UID ranges, preserving any pre-existing include/exclude UID ranges.
 func resolveAndroidUIDRanges(
-	policy ECommon.CgroupPolicy,
+	policy ECommon.LocalPolicy,
 	options *androidUIDOptions,
 	packageManager tun.PackageManager,
 ) ([]ECommon.UIDRange, []ECommon.UIDRange) {

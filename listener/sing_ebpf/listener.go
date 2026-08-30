@@ -14,7 +14,6 @@ import (
 
 	"github.com/metacubex/mihomo/common/ebpf"
 	"github.com/metacubex/mihomo/component/dialer"
-	"github.com/metacubex/mihomo/log"
 
 	E "github.com/metacubex/sing/common/exceptions"
 
@@ -153,30 +152,32 @@ func (s *internalListenerSet) selectedPort() uint16 {
 	return s.port
 }
 
-// registerTCPAssignmentSockets publishes the internal TCP listening sockets to
-// the shared-network backend so the kernel socket-assignment data plane can
-// steer assigned client flows into them (key 0 = IPv4, key 1 = IPv6).
-func (s *internalListenerSet) registerTCPAssignmentSockets(backend *ebpf.SharedNetworkBackend) error {
+// registerTCTCPListeners publishes the internal TCP listening sockets to the
+// TC backend so the kernel TC programs can steer assigned client flows into
+// them (ipv6=false = IPv4, ipv6=true = IPv6).
+func (s *internalListenerSet) registerTCTCPListeners(backend *ebpf.TCBackend) error {
 	s.access.Lock()
 	defer s.access.Unlock()
-	type registration struct {
-		key      uint32
+	for _, registration := range []struct {
+		ipv6     bool
 		listener net.Listener
-	}
-	registrations := []registration{{0, nil}, {1, nil}}
-	if s.tcp4 != nil {
-		registrations[0].listener = s.tcp4.listener
-	}
-	if s.tcp6 != nil {
-		registrations[1].listener = s.tcp6.listener
-	}
-	for _, registration := range registrations {
+	}{
+		{false, nil},
+		{true, nil},
+	} {
+		if registration.ipv6 {
+			if s.tcp6 != nil {
+				registration.listener = s.tcp6.listener
+			}
+		} else if s.tcp4 != nil {
+			registration.listener = s.tcp4.listener
+		}
 		if registration.listener == nil {
 			continue
 		}
 		conn, loaded := registration.listener.(syscall.Conn)
 		if !loaded {
-			return E.New("shared-network TCP listener does not expose syscall.Conn")
+			return E.New("TC eBPF TCP listener does not expose syscall.Conn")
 		}
 		raw, err := conn.SyscallConn()
 		if err != nil {
@@ -184,7 +185,7 @@ func (s *internalListenerSet) registerTCPAssignmentSockets(backend *ebpf.SharedN
 		}
 		var registerErr error
 		if err = raw.Control(func(fd uintptr) {
-			registerErr = backend.RegisterTCPAssignmentSocket(registration.key, int(fd))
+			registerErr = backend.RegisterTCPListener(registration.ipv6, int(fd))
 		}); err != nil {
 			return err
 		}
@@ -233,6 +234,16 @@ func (s *internalListenerSet) writeUDP(
 	}
 	_, _, err := udpConn.WriteMsgUDPAddrPort(payload, packetInfo, client)
 	return err
+}
+
+func (i *Inbound) startTCListeners() error {
+	return i.listeners.start(
+		i.enableTCP,
+		i.enableUDP,
+		true,
+		i.localIPv6 || i.sharedIPv6,
+		i.newListener,
+	)
 }
 
 func (i *Inbound) newListener(network string, ipv6 bool, port uint16) (*internalListener, error) {
@@ -347,10 +358,6 @@ func (i *Inbound) packetWarn(message ...any) {
 	i.udpWarnings.packetInfo.warn(i.logWarn, message...)
 }
 
-func (i *Inbound) logWarn(format string, args ...any) {
-	log.Warnln(format, args...)
-}
-
 func (i *Inbound) socketControl(ipv6 bool) func(network, address string, rawConn syscall.RawConn) error {
 	return func(network, address string, rawConn syscall.RawConn) error {
 		if ipv6 {
@@ -387,4 +394,21 @@ func (i *Inbound) socketControl(ipv6 bool) func(network, address string, rawConn
 		// never re-capture the internal listeners' own traffic.
 		return dialer.ApplySocketProtect(network, address, rawConn)
 	}
+}
+
+func (s *internalListenerSet) String() string {
+	var listeners []string
+	if s.tcp4 != nil {
+		listeners = append(listeners, "tcp4="+s.tcp4.listener.Addr().String())
+	}
+	if s.tcp6 != nil {
+		listeners = append(listeners, "tcp6="+s.tcp6.listener.Addr().String())
+	}
+	if s.udp4 != nil {
+		listeners = append(listeners, "udp4="+s.udp4.packet.LocalAddr().String())
+	}
+	if s.udp6 != nil {
+		listeners = append(listeners, "udp6="+s.udp6.packet.LocalAddr().String())
+	}
+	return strings.Join(listeners, ", ")
 }

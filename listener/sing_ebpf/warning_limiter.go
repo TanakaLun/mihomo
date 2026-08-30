@@ -37,11 +37,14 @@ func (l *warningLimiter) warn(logger warningLogger, message ...any) {
 	if !allowed {
 		return
 	}
-	if suppressed > 0 {
-		message = append(message, fmt.Sprintf(" (%d similar warnings suppressed)", suppressed))
+	text := make([]string, 0, len(message))
+	for _, part := range message {
+		text = append(text, fmt.Sprint(part))
 	}
-	format := strings.TrimSpace(strings.Repeat("%v ", len(message)))
-	logger("[EBPF] "+format, message...)
+	if suppressed > 0 {
+		text = append(text, fmt.Sprintf("(%d similar messages suppressed)", suppressed))
+	}
+	logger("%s", strings.Join(text, " "))
 }
 
 type udpWarningLimiters struct {

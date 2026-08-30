@@ -11,15 +11,13 @@ import (
 
 type EBPFOption struct {
 	BaseOption
-	Mode                 string        `inbound:"mode,omitempty"`
-	Network              []string      `inbound:"network,omitempty"`
-	UDPTimeout           int64         `inbound:"udp-timeout,omitempty"`
-	DNSMode              string        `inbound:"dns-mode,omitempty"`
-	BypassPrivateAddress *bool         `inbound:"bypass-private-address,omitempty"`
-	BypassRuleSet        []string      `inbound:"bypass-rule-set,omitempty"`
-	TCPSplice            bool          `inbound:"tcp-splice,omitempty"`
-	Local                LC.EBPFLocal  `inbound:"local,omitempty"`
-	Shared               LC.EBPFShared `inbound:"shared,omitempty"`
+	Mode          string        `inbound:"mode,omitempty"`
+	Network       []string      `inbound:"network,omitempty"`
+	UDPTimeout    int64         `inbound:"udp-timeout,omitempty"`
+	TCPriority    uint16        `inbound:"tc-priority,omitempty"`
+	BypassRuleSet []string      `inbound:"bypass-rule-set,omitempty"`
+	Local         LC.EBPFLocal  `inbound:"local,omitempty"`
+	Shared        LC.EBPFShared `inbound:"shared,omitempty"`
 }
 
 func (o EBPFOption) Equal(config C.InboundConfig) bool {
@@ -42,15 +40,13 @@ func NewEBPF(options *EBPFOption) (*EBPF, error) {
 		Base:   base,
 		config: options,
 		ebpf: LC.EBPF{
-			Mode:                 options.Mode,
-			Network:              options.Network,
-			UDPTimeout:           options.UDPTimeout,
-			DNSMode:              options.DNSMode,
-			BypassPrivateAddress: options.BypassPrivateAddress,
-			BypassRuleSet:        options.BypassRuleSet,
-			TCPSplice:            options.TCPSplice,
-			Local:                options.Local,
-			Shared:               options.Shared,
+			Mode:          options.Mode,
+			Network:       options.Network,
+			UDPTimeout:    options.UDPTimeout,
+			TCPriority:    options.TCPriority,
+			BypassRuleSet: options.BypassRuleSet,
+			Local:         options.Local,
+			Shared:        options.Shared,
 		},
 	}, nil
 }

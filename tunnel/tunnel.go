@@ -626,14 +626,6 @@ func handleTCPConn(connCtx C.ConnContext) {
 	peekMutex.Lock()
 	defer peekMutex.Unlock()
 	_ = conn.SetReadDeadline(time.Time{}) // reset
-	// Experimental eBPF kernel splice: only for DIRECT relays of flows that
-	// entered through the eBPF inbound, before the userspace relay starts.
-	if proxy.Type() == C.Direct && metadata.Type == C.EBPF {
-		if hook := N.LoadTCPSplicer(); hook != nil && hook(conn, remoteConn) {
-			log.Debugln("[TCP] %s --> %s using eBPF kernel splice", metadata.SourceDetail(), metadata.RemoteAddress())
-			return
-		}
-	}
 	handleSocket(conn, remoteConn)
 }
 

@@ -47,7 +47,7 @@ func TestResolveAndroidUIDRanges(t *testing.T) {
 			10003: {"com.example.exclude"},
 		},
 	}
-	policy := ECommon.CgroupPolicy{
+	policy := ECommon.LocalPolicy{
 		IncludeUID: []ECommon.UIDRange{{Start: 2000, End: 2000}},
 		ExcludeUID: []ECommon.UIDRange{{Start: 3000, End: 3000}},
 	}
