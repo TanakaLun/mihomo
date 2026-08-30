@@ -22,6 +22,8 @@ func TestClassifyKernelProbeError(t *testing.T) {
 		{"supported", nil, KernelProbePass},
 		{"unsupported", CiliumEBPF.ErrNotSupported, KernelProbeFail},
 		{"wrapped unsupported", errors.Join(errors.New("probe"), CiliumEBPF.ErrNotSupported), KernelProbeFail},
+		{"unsupported errno", unix.EOPNOTSUPP, KernelProbeFail},
+		{"android unsupported errno", linuxErrnoNotSupported, KernelProbeFail},
 		{"permission denied", unix.EPERM, KernelProbeUnknown},
 	}
 	for _, test := range tests {
@@ -37,14 +39,23 @@ func TestKernelProbeReportCounts(t *testing.T) {
 	report := &KernelProbeReport{}
 	report.Add(KernelProbePass, "common", KernelProbeRequired, "one", "")
 	report.Add(KernelProbeFail, "local", KernelProbeRequired, "two", "")
-	report.Add(KernelProbeFail, "local", KernelProbeFallback, "three", "")
-	report.Add(KernelProbeUnknown, "shared-network", KernelProbeRequired, "four", "")
+	report.Add(KernelProbeFail, "local", KernelProbePerformance, "three", "")
+	report.Add(KernelProbeUnknown, "shared", KernelProbeRequired, "four", "")
 	if failures := report.RequiredFailures(); failures != 1 {
 		t.Fatalf("unexpected required failure count: %d", failures)
 	}
 	counts := report.Counts()
 	if counts[KernelProbePass] != 1 || counts[KernelProbeFail] != 2 || counts[KernelProbeUnknown] != 1 {
 		t.Fatalf("unexpected counts: %v", counts)
+	}
+	if unknowns := report.RequiredUnknowns(); unknowns != 1 {
+		t.Fatalf("unexpected required unknown count: %d", unknowns)
+	}
+	if issues := report.RequiredIssues(); issues != 2 {
+		t.Fatalf("unexpected required issue count: %d", issues)
+	}
+	if err := report.RequiredError(); err == nil || !strings.Contains(err.Error(), "two") {
+		t.Fatalf("unexpected required error: %v", err)
 	}
 }
 
@@ -75,22 +86,24 @@ func TestMemlockProbeResult(t *testing.T) {
 func TestWriteKernelProbeReport(t *testing.T) {
 	report := &KernelProbeReport{
 		Platform:      "Linux",
-		KernelRelease: "4.19.0-test",
+		KernelRelease: "5.7.0-test",
 		Architecture:  "arm64",
 		Mode:          KernelProbeModeLocal,
+		IPv6:          true,
 	}
 	report.Add(KernelProbePass, "common", KernelProbeRequired, "hash map", "available")
-	report.Add(KernelProbeUnknown, "local", KernelProbeRequired, "cgroup", "permission required")
+	report.Add(KernelProbeUnknown, "local", KernelProbeRequired, "TC hook", "permission required")
 	var output bytes.Buffer
 	if err := WriteKernelProbeReport(&output, report); err != nil {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
-		"kernel: 4.19.0-test",
+		"kernel: 5.7.0-test",
+		"ipv6: true",
 		"cilium/ebpf direct bpf(2) probes",
 		"PASS",
 		"UNKNOWN",
-		"Summary: PASS=1 WARN=0 FAIL=0 UNKNOWN=1",
+		"Summary: PASS=1 WARN=0 FAIL=0 UNKNOWN=1 REQUIRED_FAILURES=0 REQUIRED_UNKNOWNS=1",
 	} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("report is missing %q:\n%s", expected, output.String())
@@ -103,7 +116,7 @@ func TestWriteKernelProbeReportJSON(t *testing.T) {
 		Platform:      "Android",
 		KernelRelease: "6.6.30-test",
 		Architecture:  "arm64",
-		Mode:          KernelProbeModeSharedNetwork,
+		Mode:          KernelProbeModeShared,
 		Network:       []string{"tcp", "udp"},
 		ActivePrograms: []KernelProbeProgram{{
 			ID:       42,
@@ -113,7 +126,7 @@ func TestWriteKernelProbeReportJSON(t *testing.T) {
 		}},
 	}
 	report.Add(KernelProbePass, "common", KernelProbeRequired, "hash map", "available")
-	report.Add(KernelProbeFail, "shared-network", KernelProbeRequired, "sched_cls", "unavailable")
+	report.Add(KernelProbeFail, "shared", KernelProbeRequired, "sched_cls", "unavailable")
 	var output bytes.Buffer
 	if err := WriteKernelProbeReportJSON(&output, report); err != nil {
 		t.Fatal(err)
@@ -139,30 +152,6 @@ func TestWriteKernelProbeReportJSON(t *testing.T) {
 		decoded.Summary.RequiredFailures != 1 || len(decoded.ActivePrograms) != 1 ||
 		decoded.ActivePrograms[0].ID != 42 || decoded.ActivePrograms[0].Type != CiliumEBPF.SchedCLS.String() {
 		t.Fatalf("unexpected JSON report: %+v", decoded)
-	}
-}
-
-func TestPathWithin(t *testing.T) {
-	for _, test := range []struct {
-		path string
-		root string
-		want bool
-	}{
-		{"/sys/fs/cgroup", "/sys/fs/cgroup", true},
-		{"/sys/fs/cgroup/sing-box", "/sys/fs/cgroup", true},
-		{"/sys/fs/cgroup2", "/sys/fs/cgroup", false},
-		{"/sys/fs", "/sys/fs/cgroup", false},
-	} {
-		if got := pathWithin(test.path, test.root); got != test.want {
-			t.Fatalf("pathWithin(%q, %q)=%v, want %v", test.path, test.root, got, test.want)
-		}
-	}
-}
-
-func TestKernelVersionCode(t *testing.T) {
-	version := kernelVersionCode(5, 2, 300)
-	if formatted := formatKernelVersionCode(version); formatted != "5.2.255" {
-		t.Fatalf("unexpected formatted version: %s", formatted)
 	}
 }
 

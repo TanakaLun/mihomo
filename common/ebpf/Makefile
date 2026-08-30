@@ -13,9 +13,7 @@ GO_GENERATE_HOST_OS := $(shell go env GOHOSTOS)
 GO_GENERATE_HOST_ARCH := $(shell go env GOHOSTARCH)
 
 GENERATED_DIR := internal/bpfgen
-GENERATED := $(addprefix $(GENERATED_DIR)/,cgroup_bpfel.go cgroup_bpfel.o cgroup_bpfeb.go cgroup_bpfeb.o \
-	shared_network_bpfel.go shared_network_bpfel.o shared_network_bpfeb.go shared_network_bpfeb.o \
-	splice_bpfel.go splice_bpfel.o splice_bpfeb.go splice_bpfeb.o manifest.txt)
+GENERATED := $(addprefix $(GENERATED_DIR)/,tc_bpfel.go tc_bpfel.o tc_bpfeb.go tc_bpfeb.o manifest.txt)
 NATIVE_SOURCES := $(sort $(wildcard native/*.c native/*.h))
 
 .PHONY: generate check clean

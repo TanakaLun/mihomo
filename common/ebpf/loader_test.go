@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	CiliumEBPF "github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 )
 
 type objectMapLayout struct {
@@ -13,99 +14,88 @@ type objectMapLayout struct {
 	valueSize uint32
 }
 
-func TestEmbeddedCgroupObjectLayout(t *testing.T) {
-	testEmbeddedObjectLayout(t, loadCgroup, map[string]objectMapLayout{
-		"cgroup_control":        {4, 72},
-		"cgroup_stats":          {4, 8},
-		"cgroup_tcp_redirect":   {20, 40},
-		"cgroup_udp_redirect":   {20, 40},
-		"cgroup_udp_recovery":   {20, 40},
-		"cgroup_udp_token":      {8, 20},
-		"cgroup_udp_peer":       {8, 20},
-		"cgroup_udp_flow":       {32, 32},
-		"cgroup_socket_bypass":  {8, 1},
-		"cgroup_uid_policy":     {8, 1},
-		"cgroup_bypass_ipv4":    {8, 1},
-		"cgroup_bypass_ipv6":    {20, 1},
-		"cgroup_host_ipv4":      {8, 1},
-		"cgroup_host_ipv6":      {20, 1},
-		"cgroup_ipv6_available": {4, 4},
-	}, []string{
-		"cgroup/connect4_tgid",
-		"cgroup/connect4_cookie",
-		"cgroup/connect4_tgid_tcp",
-		"cgroup/connect4_cookie_tcp",
-		"cgroup/connect4_tgid_udp",
-		"cgroup/connect4_cookie_udp",
-		"cgroup/sendmsg4_tgid",
-		"cgroup/sendmsg4_cookie",
-		"cgroup/recvmsg4",
-		"cgroup/connect6_tgid",
-		"cgroup/connect6_cookie",
-		"cgroup/connect6_tgid_tcp",
-		"cgroup/connect6_cookie_tcp",
-		"cgroup/connect6_tgid_udp",
-		"cgroup/connect6_cookie_udp",
-		"cgroup/connect6_mapped_tgid",
-		"cgroup/connect6_mapped_cookie",
-		"cgroup/connect6_mapped_tgid_tcp",
-		"cgroup/connect6_mapped_cookie_tcp",
-		"cgroup/connect6_mapped_tgid_udp",
-		"cgroup/connect6_mapped_cookie_udp",
-		"cgroup/sendmsg6_tgid",
-		"cgroup/sendmsg6_cookie",
-		"cgroup/sendmsg6_mapped_tgid",
-		"cgroup/sendmsg6_mapped_cookie",
-		"cgroup/recvmsg6",
-		"cgroup/recvmsg6_mapped",
-		"cgroup/sock_release_tgid",
-		"cgroup/sock_release_cookie",
-	})
-	assertEmbeddedProgramType(
-		t,
-		loadCgroup,
-		[]string{"cgroup/sock_release_tgid", "cgroup/sock_release_cookie"},
-		CiliumEBPF.CGroupSock,
-		CiliumEBPF.AttachCgroupInetSockRelease,
-	)
+func TestTCLocalProgramsDoNotUseTGIDHelper(t *testing.T) {
+	spec, err := loadTC()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, section := range []string{
+		"classifier/local_egress_ethernet_mark",
+		"classifier/local_egress_raw_ip_mark",
+		"classifier/local_egress_ethernet_process",
+		"classifier/local_egress_raw_ip_process",
+	} {
+		for _, program := range spec.Programs {
+			if program.SectionName != section {
+				continue
+			}
+			for _, instruction := range program.Instructions {
+				if instruction.IsBuiltinCall() && asm.BuiltinFunc(instruction.Constant) == asm.FnGetCurrentPidTgid {
+					t.Fatalf("section %q still uses the TGID helper", section)
+				}
+			}
+		}
+	}
 }
 
-func TestEmbeddedSharedNetworkObjectLayout(t *testing.T) {
-	testEmbeddedObjectLayout(t, loadSharedNetwork, map[string]objectMapLayout{
-		"shared_control":             {4, 88},
-		"shared_stats":               {4, 8},
-		"shared_flow_by_original":    {44, 40},
-		"shared_bypass_flow":         {44, 16},
-		"shared_flow_by_token":       {40, 40},
-		"shared_listener_sockets":    {4, 4},
-		"shared_assign_metadata":     {40, 12},
-		"shared_fragment":            {44, 32},
-		"shared_host_ipv4":           {8, 1},
-		"shared_host_ipv6":           {20, 1},
-		"shared_include_source_ipv4": {8, 1},
-		"shared_include_source_ipv6": {20, 1},
-		"shared_exclude_source_ipv4": {8, 1},
-		"shared_exclude_source_ipv6": {20, 1},
-		"shared_include_source_mac":  {8, 1},
-		"shared_exclude_source_mac":  {8, 1},
-		"shared_bypass_ipv4":         {8, 1},
-		"shared_bypass_ipv6":         {20, 1},
-		"shared_scratch":             {4, 272},
-	}, []string{
-		"classifier/ingress",
-		"classifier/assign",
-		"classifier/egress",
-	})
+func TestTCLocalProgramsUseSocketCookieHelper(t *testing.T) {
+	spec, err := loadTC()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sections := map[string]bool{
+		"classifier/local_egress_ethernet_mark":    true,
+		"classifier/local_egress_raw_ip_mark":      true,
+		"classifier/local_egress_ethernet_process": true,
+		"classifier/local_egress_raw_ip_process":   true,
+	}
+	for _, program := range spec.Programs {
+		expected, selected := sections[program.SectionName]
+		if !selected {
+			continue
+		}
+		found := false
+		for _, instruction := range program.Instructions {
+			if instruction.IsBuiltinCall() && asm.BuiltinFunc(instruction.Constant) == asm.FnGetSocketCookie {
+				found = true
+				break
+			}
+		}
+		if found != expected {
+			t.Errorf("section %q socket-cookie helper=%v, want %v", program.SectionName, found, expected)
+		}
+		delete(sections, program.SectionName)
+	}
+	if len(sections) != 0 {
+		t.Fatalf("missing TC sections: %v", sections)
+	}
 }
 
-func TestEmbeddedSpliceObjectLayout(t *testing.T) {
-	testEmbeddedObjectLayout(t, loadSplice, map[string]objectMapLayout{
-		"splice_sockets": {40, 4},
-		"splice_peers":   {40, 48},
-		"splice_stats":   {4, 8},
+func TestEmbeddedTCObjectLayout(t *testing.T) {
+	testEmbeddedObjectLayout(t, loadTC, map[string]objectMapLayout{
+		"tc_control":             {4, 72},
+		"tc_listener_sockets":    {4, 4},
+		"tc_assignment":          {44, 24},
+		"tc_self_sockets":        {8, 4},
+		"tc_uid_policy":          {8, 1},
+		"tc_bypass_ipv4":         {8, 1},
+		"tc_bypass_ipv6":         {20, 1},
+		"tc_include_source_ipv4": {8, 1},
+		"tc_include_source_ipv6": {20, 1},
+		"tc_exclude_source_ipv4": {8, 1},
+		"tc_exclude_source_ipv6": {20, 1},
+		"tc_include_source_mac":  {8, 1},
+		"tc_exclude_source_mac":  {8, 1},
+		"tc_host_ipv4":           {4, 1},
+		"tc_host_ipv6":           {16, 1},
 	}, []string{
-		"sk_skb/stream_parser",
-		"sk_skb/stream_verdict",
+		"classifier/local_egress_ethernet_mark",
+		"classifier/local_egress_raw_ip_mark",
+		"classifier/local_egress_ethernet_process",
+		"classifier/local_egress_raw_ip_process",
+		"classifier/shared_ingress_ethernet",
+		"classifier/shared_ingress_raw_ip",
+		"classifier/delivery_ingress",
 	})
 }
 
@@ -143,45 +133,6 @@ func testEmbeddedObjectLayout(
 	}
 	for _, section := range sections {
 		if !availableSections[section] {
-			t.Errorf("missing program section %q", section)
-		}
-	}
-}
-
-func assertEmbeddedProgramType(
-	t *testing.T,
-	loadSpec func() (*CiliumEBPF.CollectionSpec, error),
-	sections []string,
-	programType CiliumEBPF.ProgramType,
-	attachType CiliumEBPF.AttachType,
-) {
-	t.Helper()
-	spec, err := loadSpec()
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := make(map[string]bool, len(sections))
-	for _, section := range sections {
-		expected[section] = false
-	}
-	for _, program := range spec.Programs {
-		if _, selected := expected[program.SectionName]; !selected {
-			continue
-		}
-		expected[program.SectionName] = true
-		if program.Type != programType || program.AttachType != attachType {
-			t.Errorf(
-				"program section %q has type/attach %v/%v, want %v/%v",
-				program.SectionName,
-				program.Type,
-				program.AttachType,
-				programType,
-				attachType,
-			)
-		}
-	}
-	for section, found := range expected {
-		if !found {
 			t.Errorf("missing program section %q", section)
 		}
 	}

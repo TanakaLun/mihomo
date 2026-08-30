@@ -11,7 +11,7 @@
 #define INLINE static __attribute__((always_inline))
 #define NOINLINE static __attribute__((noinline))
 
-/* Legacy map definitions keep the objects usable without kernel BTF/CO-RE. */
+/* Classic map definitions keep the objects usable without kernel BTF/CO-RE. */
 struct bpf_map_def {
     __u32 type;
     __u32 key_size;

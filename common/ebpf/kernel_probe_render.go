@@ -22,6 +22,8 @@ type kernelProbeJSONSummary struct {
 	Fail             int `json:"fail"`
 	Unknown          int `json:"unknown"`
 	RequiredFailures int `json:"required_failures"`
+	RequiredUnknowns int `json:"required_unknowns"`
+	RequiredIssues   int `json:"required_issues"`
 }
 
 type kernelProbeJSONReport struct {
@@ -30,6 +32,7 @@ type kernelProbeJSONReport struct {
 	Architecture     string                   `json:"architecture"`
 	Mode             KernelProbeMode          `json:"mode"`
 	Network          []string                 `json:"network"`
+	IPv6             bool                     `json:"ipv6"`
 	Findings         []KernelProbeFinding     `json:"findings"`
 	ActivePrograms   []kernelProbeJSONProgram `json:"active_programs"`
 	ActiveStateError string                   `json:"active_state_error,omitempty"`
@@ -45,6 +48,7 @@ func WriteKernelProbeReportJSON(writer io.Writer, report *KernelProbeReport) err
 		Architecture:   report.Architecture,
 		Mode:           report.Mode,
 		Network:        report.Network,
+		IPv6:           report.IPv6,
 		Findings:       report.Findings,
 		ActivePrograms: make([]kernelProbeJSONProgram, 0, len(report.ActivePrograms)),
 		Summary: kernelProbeJSONSummary{
@@ -53,6 +57,8 @@ func WriteKernelProbeReportJSON(writer io.Writer, report *KernelProbeReport) err
 			Fail:             counts[KernelProbeFail],
 			Unknown:          counts[KernelProbeUnknown],
 			RequiredFailures: report.RequiredFailures(),
+			RequiredUnknowns: report.RequiredUnknowns(),
+			RequiredIssues:   report.RequiredIssues(),
 		},
 		Result: kernelProbeResult(report),
 	}
@@ -76,7 +82,7 @@ func kernelProbeResult(report *KernelProbeReport) string {
 	if report.RequiredFailures() > 0 {
 		return "unsupported"
 	}
-	if report.Counts()[KernelProbeUnknown] > 0 || report.ActiveStateErr != nil {
+	if report.RequiredUnknowns() > 0 || report.ActiveStateErr != nil {
 		return "inconclusive"
 	}
 	return "supported"
@@ -86,14 +92,14 @@ func WriteKernelProbeReport(writer io.Writer, report *KernelProbeReport) error {
 	if _, err := fmt.Fprintln(writer, "sing-box eBPF inbound kernel capability probe"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(writer, "Platform: %s; kernel: %s; architecture: %s; mode: %s; network: %s\n",
-		report.Platform, report.KernelRelease, report.Architecture, report.Mode, strings.Join(report.Network, ",")); err != nil {
+	if _, err := fmt.Fprintf(writer, "Platform: %s; kernel: %s; architecture: %s; mode: %s; network: %s; ipv6: %t\n",
+		report.Platform, report.KernelRelease, report.Architecture, report.Mode, strings.Join(report.Network, ","), report.IPv6); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(writer, "Runtime feature probe: cilium/ebpf direct bpf(2) probes (no shell, bpftool, or tc dependency)"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(writer, "The probe does not attach programs or change qdiscs, routes, sysctls, cgroups, or traffic."); err != nil {
+	if _, err := fmt.Fprintln(writer, "The probe does not attach programs or change qdiscs, routes, sysctls, or traffic."); err != nil {
 		return err
 	}
 
@@ -132,19 +138,20 @@ func WriteKernelProbeReport(writer io.Writer, report *KernelProbeReport) error {
 	}
 
 	counts := report.Counts()
-	if _, err := fmt.Fprintf(writer, "\nSummary: PASS=%d WARN=%d FAIL=%d UNKNOWN=%d\n",
-		counts[KernelProbePass], counts[KernelProbeWarn], counts[KernelProbeFail], counts[KernelProbeUnknown]); err != nil {
+	if _, err := fmt.Fprintf(writer, "\nSummary: PASS=%d WARN=%d FAIL=%d UNKNOWN=%d REQUIRED_FAILURES=%d REQUIRED_UNKNOWNS=%d\n",
+		counts[KernelProbePass], counts[KernelProbeWarn], counts[KernelProbeFail], counts[KernelProbeUnknown],
+		report.RequiredFailures(), report.RequiredUnknowns()); err != nil {
 		return err
 	}
 	if failures := report.RequiredFailures(); failures > 0 {
 		_, err := fmt.Fprintf(writer, "Result: unsupported for at least one selected data path (%d required check(s) failed).\n", failures)
 		return err
 	}
-	if counts[KernelProbeUnknown] > 0 || report.ActiveStateErr != nil {
-		_, err := fmt.Fprintln(writer, "Result: no required failure was proven, but UNKNOWN checks need more privileges or a real sing-box startup test.")
+	if report.RequiredUnknowns() > 0 || report.ActiveStateErr != nil {
+		_, err := fmt.Fprintln(writer, "Result: required checks are inconclusive; repeat with the service privileges or run a real sing-box startup test.")
 		return err
 	}
-	_, err := fmt.Fprintln(writer, "Result: all selected checks passed or have a documented compatibility fallback.")
+	_, err := fmt.Fprintln(writer, "Result: all selected checks passed.")
 	return err
 }
 
@@ -153,9 +160,9 @@ func kernelProbeScopeTitle(scope string) string {
 	case "common":
 		return "Common prerequisites"
 	case "local":
-		return "Local cgroup data path"
-	case "shared-network":
-		return "Shared-network TC gateway data path"
+		return "Local TC data path"
+	case "shared":
+		return "Shared TC gateway data path"
 	default:
 		return scope
 	}
