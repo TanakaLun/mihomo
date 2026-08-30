@@ -218,6 +218,10 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 		udpTimeout = time.Duration(options.UDPTimeout)
 	}
 	inbound.udpTimeout = udpTimeout
+	if err := inbound.start(); err != nil {
+		_ = inbound.Close()
+		return nil, err
+	}
 	return inbound, nil
 }
 
