@@ -3,17 +3,51 @@
 package ebpf
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 
 	BPFGen "github.com/metacubex/mihomo/common/ebpf/internal/bpfgen"
 	E "github.com/metacubex/sing/common/exceptions"
 
 	CiliumEBPF "github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 )
 
 const bpfFlagNoPrealloc = 1
 
 var loadTC = BPFGen.LoadTC
+
+var loadCgroup = BPFGen.LoadCgroup
+
+var loadCgroupCoarse = BPFGen.LoadCgroupCoarse
+
+var loadCgroupStorage = BPFGen.LoadCgroupStorage
+
+var loadSharedNetwork = BPFGen.LoadSharedNetwork
+
+func attachProgramRaw(target int, program *CiliumEBPF.Program, attachType CiliumEBPF.AttachType) error {
+	if err := link.RawAttachProgram(link.RawAttachProgramOptions{Target: target, Program: program, Attach: attachType, Flags: 2}); err == nil {
+		return nil
+	}
+	return link.RawAttachProgram(link.RawAttachProgramOptions{Target: target, Program: program, Attach: attachType})
+}
+
+func rawDetachProgram(target int, program *CiliumEBPF.Program, attachType CiliumEBPF.AttachType) error {
+	return link.RawDetachProgram(link.RawDetachProgramOptions{Target: target, Program: program, Attach: attachType})
+}
+
+func sameProgramIDs(left, right []CiliumEBPF.ProgramID) bool {
+	return slices.Equal(left, right)
+}
+
+func verifierErrorStage(err error) string {
+	var verifierErr *CiliumEBPF.VerifierError
+	if errors.As(err, &verifierErr) {
+		return fmt.Sprintf("verifier rejected program: %v", verifierErr)
+	}
+	return ""
+}
 
 type programSelection struct {
 	section string
@@ -42,7 +76,8 @@ func loadObjectMaps(
 			delete(spec.Maps, name)
 			continue
 		}
-		if override.name == "" || override.mapType == CiliumEBPF.UnspecifiedMap || override.maxEntries == 0 {
+		if override.name == "" || override.mapType == CiliumEBPF.UnspecifiedMap ||
+			(override.maxEntries == 0 && override.mapType != CiliumEBPF.SkStorage) {
 			return nil, E.New("invalid eBPF map override for ", name)
 		}
 		mapSpec.Name = override.name

@@ -6,6 +6,10 @@ const (
 	ProtocolTCP = 6
 	ProtocolUDP = 17
 
+	SocketMetadataSelfBypass      = 1 << 0
+	SocketMetadataPolicyBypass    = 1 << 1
+	SocketMetadataPolicyIntercept = 1 << 2
+
 	addressFamilyIPv4 = 2
 	addressFamilyIPv6 = 10
 )

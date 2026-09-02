@@ -88,6 +88,8 @@ func TestEmbeddedTCObjectLayout(t *testing.T) {
 		"tc_exclude_source_mac":  {8, 1},
 		"tc_host_ipv4":           {4, 1},
 		"tc_host_ipv6":           {16, 1},
+		"tc_local_bypass_port":   {4, 1},
+		"tc_shared_bypass_port":  {4, 1},
 	}, []string{
 		"classifier/local_egress_ethernet_mark",
 		"classifier/local_egress_raw_ip_mark",

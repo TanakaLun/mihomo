@@ -35,7 +35,7 @@ func TestProcessTrackerHooks(t *testing.T) {
 }
 
 func TestProcessTrackerInstructions(t *testing.T) {
-	instructions := processTrackerInstructions(1)
+	instructions := processTrackerInstructions(1, -1, -1, false)
 	if len(instructions) == 0 {
 		t.Fatal("empty process tracker instructions")
 	}

@@ -51,6 +51,15 @@
 #define SB_TC_FLAG_HOST_IPV4 (1U << 16)
 #define SB_TC_FLAG_HOST_IPV6 (1U << 17)
 #define SB_TC_FLAG_SHARED_IPV6 (1U << 18)
+#define SB_TC_FLAG_LOCAL_BYPASS_PORT (1U << 20)
+#define SB_TC_FLAG_SHARED_BYPASS_PORT (1U << 21)
+
+#define SB_TC_SOCKET_METADATA_SELF_BYPASS (1U << 0)
+#define SB_TC_SOCKET_METADATA_POLICY_BYPASS (1U << 1)
+#define SB_TC_SOCKET_METADATA_POLICY_INTERCEPT (1U << 2)
+
+#define SB_TC_SOCKET_POLICY_BYPASS 1U
+#define SB_TC_SOCKET_POLICY_INTERCEPT 2U
 
 #define SB_TC_DNS_HIJACK 0U
 #define SB_TC_DNS_RESPECT_POLICY 1U
@@ -106,6 +115,12 @@ struct sb_tc_ipv6_key {
 struct sb_tc_mac_key {
     __u8 address[6];
     __u8 reserved[2];
+};
+
+struct sb_tc_port_key {
+    __u8 protocol;
+    __u8 reserved;
+    __u16 port;
 };
 
 struct sb_tc_assign_key {
@@ -204,6 +219,8 @@ MAP(tc_include_source_mac, struct sb_tc_mac_key, __u8, BPF_MAP_TYPE_HASH, 1024U)
 MAP(tc_exclude_source_mac, struct sb_tc_mac_key, __u8, BPF_MAP_TYPE_HASH, 1024U);
 MAP(tc_host_ipv4, struct sb_tc_ipv4_key, __u8, BPF_MAP_TYPE_HASH, 4096U);
 MAP(tc_host_ipv6, struct sb_tc_ipv6_key, __u8, BPF_MAP_TYPE_HASH, 4096U);
+MAP(tc_local_bypass_port, struct sb_tc_port_key, __u8, BPF_MAP_TYPE_HASH, 4096U);
+MAP(tc_shared_bypass_port, struct sb_tc_port_key, __u8, BPF_MAP_TYPE_HASH, 4096U);
 
 static void *(*map_lookup)(void *map, const void *key) = (void *)BPF_FUNC_map_lookup_elem;
 static long (*map_update)(void *map, const void *key, const void *value, __u64 flags) =
@@ -273,10 +290,19 @@ INLINE bool uid_bypassed(struct __sk_buff *skb, const struct sb_tc_control *cont
     return (control->flags & SB_TC_FLAG_UID_DEFAULT_BYPASS) != 0U ? !matched : matched;
 }
 
-INLINE bool self_socket_bypassed(struct __sk_buff *skb) {
-    __u64 socket_cookie = get_socket_cookie(skb);
-    if (socket_cookie == 0U) return false;
-    return map_lookup(&tc_self_sockets, &socket_cookie) != 0;
+INLINE __u32 socket_metadata(__u64 socket_cookie) {
+    if (socket_cookie == 0U) return 0U;
+    __u32 *metadata = map_lookup(&tc_self_sockets, &socket_cookie);
+    return metadata != 0 ? *metadata : 0U;
+}
+
+INLINE bool port_bypassed(const struct sb_tc_control *control,
+    const struct sb_tc_assign_key *flow, bool shared) {
+    __u32 flag = shared ? SB_TC_FLAG_SHARED_BYPASS_PORT : SB_TC_FLAG_LOCAL_BYPASS_PORT;
+    if ((control->flags & flag) == 0U) return false;
+    struct sb_tc_port_key key = {.protocol = flow->protocol, .port = flow->destination_port};
+    if (shared) return map_lookup(&tc_shared_bypass_port, &key) != 0;
+    return map_lookup(&tc_local_bypass_port, &key) != 0;
 }
 
 INLINE bool dns_selected(__u8 protocol, __u16 destination_port, __u16 mode) {
@@ -362,12 +388,14 @@ INLINE bool source_mac_selected(const struct sb_tc_control *control, const __u8 
 }
 
 INLINE bool local_selected(struct __sk_buff *skb, const struct sb_tc_control *control,
-    const struct sb_tc_assign_key *key) {
+    const struct sb_tc_assign_key *key, __u32 socket_metadata_value) {
     if (fakeip_destination(control, key)) return true;
     if (dns_bypassed(key->protocol, key->destination_port, control->local_dns_mode)) return false;
     if (dns_selected(key->protocol, key->destination_port, control->local_dns_mode)) return true;
-    if (uid_bypassed(skb, control)) return false;
+    if ((socket_metadata_value & SB_TC_SOCKET_METADATA_POLICY_BYPASS) != 0U) return false;
+    if ((socket_metadata_value & SB_TC_SOCKET_METADATA_POLICY_INTERCEPT) == 0U && uid_bypassed(skb, control)) return false;
     if (key->destination_port == 53U && control->local_dns_mode == SB_TC_DNS_RESPECT_POLICY) return true;
+    if (port_bypassed(control, key, false)) return false;
     if (host_destination(control, key)) return false;
     if ((control->flags & SB_TC_FLAG_LOCAL_BYPASS_PRIVATE) != 0U && private_destination(key)) return false;
     return !bypass_destination(control, key);
@@ -380,6 +408,7 @@ INLINE bool shared_selected(const struct sb_tc_control *control,
     if (dns_selected(key->protocol, key->destination_port, control->shared_dns_mode)) return true;
     if (!source_address_selected(control, key) || !source_mac_selected(control, source_mac)) return false;
     if (key->destination_port == 53U && control->shared_dns_mode == SB_TC_DNS_RESPECT_POLICY) return true;
+    if (port_bypassed(control, key, true)) return false;
     if (host_destination(control, key)) return false;
     if ((control->flags & SB_TC_FLAG_SHARED_BYPASS_PRIVATE) != 0U && private_destination(key)) return false;
     return !bypass_destination(control, key);
@@ -518,6 +547,38 @@ NOINLINE struct bpf_sock *lookup_tcp_socket(struct __sk_buff *skb,
     return map_lookup(&tc_listener_sockets, &listener);
 }
 
+NOINLINE struct bpf_sock *lookup_tcp_socket_legacy(struct __sk_buff *skb,
+    const struct sb_tc_control *control, const struct sb_tc_assign_key *key) {
+    struct bpf_sock_tuple tuple = {};
+    __u32 tuple_size;
+    if (key->family == AF_INET_VALUE) {
+        __builtin_memcpy(&tuple.ipv4.saddr, key->source_addr, 4U);
+        __builtin_memcpy(&tuple.ipv4.daddr, key->destination_addr, 4U);
+        tuple.ipv4.sport = network_order16(key->source_port);
+        tuple.ipv4.dport = network_order16(key->destination_port);
+        tuple_size = sizeof(tuple.ipv4);
+    } else {
+        copy_address((__u8 *)&tuple.ipv6.saddr, key->source_addr, 16U);
+        copy_address((__u8 *)&tuple.ipv6.daddr, key->destination_addr, 16U);
+        tuple.ipv6.sport = network_order16(key->source_port);
+        tuple.ipv6.dport = network_order16(key->destination_port);
+        tuple_size = sizeof(tuple.ipv6);
+    }
+    struct bpf_sock *socket = skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0U);
+    if (socket != 0 && socket->state != BPF_TCP_LISTEN) return socket;
+    if (socket != 0) sk_release(socket);
+
+    // The legacy path has no SOCKMAP. Query the actual transparent listener
+    // port after the established-socket lookup so wildcard listeners remain
+    // usable on kernels that reject SOCKMAP or map-backed sk_assign.
+    if (key->family == AF_INET_VALUE) {
+        tuple.ipv4.dport = network_order16(control->listener_port);
+    } else {
+        tuple.ipv6.dport = network_order16(control->listener_port);
+    }
+    return skc_lookup_tcp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0U);
+}
+
 NOINLINE struct bpf_sock *lookup_udp_socket(struct __sk_buff *skb,
     const struct sb_tc_control *control, const struct sb_tc_assign_key *key) {
     struct bpf_sock_tuple tuple = {};
@@ -536,6 +597,16 @@ NOINLINE struct bpf_sock *lookup_udp_socket(struct __sk_buff *skb,
         tuple_size = sizeof(tuple.ipv6);
     }
     return sk_lookup_udp(skb, &tuple, tuple_size, BPF_F_CURRENT_NETNS, 0U);
+}
+
+INLINE bool source_mac_equal(const __u8 left[6], const __u8 right[6]) {
+    __u32 left_low, right_low;
+    __u16 left_high, right_high;
+    __builtin_memcpy(&left_low, left, 4U);
+    __builtin_memcpy(&right_low, right, 4U);
+    __builtin_memcpy(&left_high, left + 4U, 2U);
+    __builtin_memcpy(&right_high, right + 4U, 2U);
+    return left_low == right_low && left_high == right_high;
 }
 
 NOINLINE int assign_socket(struct __sk_buff *skb, const struct sb_tc_control *control,
@@ -560,14 +631,7 @@ NOINLINE int assign_socket(struct __sk_buff *skb, const struct sb_tc_control *co
     bool assignment_changed = existing == 0 || existing->socket_cookie != value.socket_cookie ||
         existing->ifindex != value.ifindex ||
         existing->path != value.path || existing->source_mac_valid != value.source_mac_valid;
-    if (!assignment_changed) {
-        assignment_changed = existing->source_mac[0] != value.source_mac[0] ||
-            existing->source_mac[1] != value.source_mac[1] ||
-            existing->source_mac[2] != value.source_mac[2] ||
-            existing->source_mac[3] != value.source_mac[3] ||
-            existing->source_mac[4] != value.source_mac[4] ||
-            existing->source_mac[5] != value.source_mac[5];
-    }
+    if (!assignment_changed && source_mac_valid) assignment_changed = !source_mac_equal(existing->source_mac, value.source_mac);
     if (assignment_changed && map_update(&tc_assignment, &assignment_key, &value, BPF_ANY) != 0) {
         sk_release(socket);
         return TC_ACT_SHOT;
@@ -575,14 +639,82 @@ NOINLINE int assign_socket(struct __sk_buff *skb, const struct sb_tc_control *co
     long result = sk_assign(skb, socket, 0U);
     sk_release(socket);
     if (result != 0) {
-        map_delete(&tc_assignment, key);
+        map_delete(&tc_assignment, &assignment_key);
         return TC_ACT_SHOT;
     }
     return TC_ACT_OK;
 }
 
-INLINE void record_local_socket_cookie(struct __sk_buff *skb, const struct sb_tc_assign_key *key) {
-    __u64 socket_cookie = get_socket_cookie(skb);
+NOINLINE int assign_socket_legacy(struct __sk_buff *skb, const struct sb_tc_control *control,
+    const struct sb_tc_assign_key *key, const __u8 source_mac[6], __u8 path) {
+    bool source_mac_valid = (path & SB_TC_PATH_SOURCE_MAC_VALID) != 0U;
+    path &= ~SB_TC_PATH_SOURCE_MAC_VALID;
+    struct bpf_sock *socket = key->protocol == IPPROTO_TCP_VALUE
+        ? lookup_tcp_socket_legacy(skb, control, key)
+        : lookup_udp_socket(skb, control, key);
+    if (socket == 0) return TC_ACT_SHOT;
+    struct sb_tc_assign_key assignment_key = *key;
+    if (key->protocol == IPPROTO_UDP_VALUE && path == SB_TC_PATH_SHARED)
+        assignment_key.interface_index = skb->ifindex;
+    struct sb_tc_assign_value *existing = map_lookup(&tc_assignment, &assignment_key);
+    struct sb_tc_assign_value value = {
+        .socket_cookie = path == SB_TC_PATH_DELIVERY && existing != 0 ? existing->socket_cookie : 0U,
+        .ifindex = skb->ifindex,
+        .path = path,
+        .source_mac_valid = source_mac_valid,
+    };
+    __builtin_memcpy(value.source_mac, source_mac, 6U);
+    bool assignment_changed = existing == 0 || existing->socket_cookie != value.socket_cookie ||
+        existing->ifindex != value.ifindex ||
+        existing->path != value.path || existing->source_mac_valid != value.source_mac_valid;
+    if (!assignment_changed && source_mac_valid) assignment_changed = !source_mac_equal(existing->source_mac, value.source_mac);
+    if (assignment_changed && map_update(&tc_assignment, &assignment_key, &value, BPF_ANY) != 0) {
+        sk_release(socket);
+        return TC_ACT_SHOT;
+    }
+    long result = sk_assign(skb, socket, 0U);
+    sk_release(socket);
+    if (result != 0) {
+        map_delete(&tc_assignment, &assignment_key);
+        return TC_ACT_SHOT;
+    }
+    return TC_ACT_OK;
+}
+
+NOINLINE int assign_udp_socket(struct __sk_buff *skb, const struct sb_tc_control *control,
+    const struct sb_tc_assign_key *key, const __u8 source_mac[6], __u8 path) {
+    bool source_mac_valid = (path & SB_TC_PATH_SOURCE_MAC_VALID) != 0U;
+    path &= ~SB_TC_PATH_SOURCE_MAC_VALID;
+    struct bpf_sock *socket = lookup_udp_socket(skb, control, key);
+    if (socket == 0) return TC_ACT_SHOT;
+    struct sb_tc_assign_key assignment_key = *key;
+    assignment_key.interface_index = path == SB_TC_PATH_SHARED ? skb->ifindex : 0U;
+    struct sb_tc_assign_value *existing = map_lookup(&tc_assignment, &assignment_key);
+    struct sb_tc_assign_value value = {
+        .socket_cookie = path == SB_TC_PATH_DELIVERY && existing != 0 ? existing->socket_cookie : 0U,
+        .ifindex = skb->ifindex,
+        .path = path,
+        .source_mac_valid = source_mac_valid,
+    };
+    __builtin_memcpy(value.source_mac, source_mac, 6U);
+    bool assignment_changed = existing == 0 || existing->socket_cookie != value.socket_cookie ||
+        existing->ifindex != value.ifindex || existing->path != value.path ||
+        existing->source_mac_valid != value.source_mac_valid;
+    if (!assignment_changed && source_mac_valid) assignment_changed = !source_mac_equal(existing->source_mac, value.source_mac);
+    if (assignment_changed && map_update(&tc_assignment, &assignment_key, &value, BPF_ANY) != 0) {
+        sk_release(socket);
+        return TC_ACT_SHOT;
+    }
+    long result = sk_assign(skb, socket, 0U);
+    sk_release(socket);
+    if (result != 0) {
+        map_delete(&tc_assignment, &assignment_key);
+        return TC_ACT_SHOT;
+    }
+    return TC_ACT_OK;
+}
+
+INLINE void record_local_socket_cookie(const struct sb_tc_assign_key *key, __u64 socket_cookie) {
     if (socket_cookie == 0U) return;
     struct sb_tc_assign_value *existing = map_lookup(&tc_assignment, key);
     if (existing != 0 && existing->socket_cookie == socket_cookie) return;
@@ -607,12 +739,14 @@ INLINE int local_egress_mark(struct __sk_buff *skb, bool ethernet, bool track_pr
     const struct sb_tc_control *control = load_control();
     if (control == 0 || control->enabled == 0U || control->delivery_ifindex == 0U) return TC_ACT_UNSPEC;
     if (skb->ingress_ifindex != 0U) return TC_ACT_UNSPEC;
-    if (self_socket_bypassed(skb)) return TC_ACT_UNSPEC;
+    __u64 socket_cookie = get_socket_cookie(skb);
+    __u32 socket_metadata_value = socket_metadata(socket_cookie);
+    if ((socket_metadata_value & SB_TC_SOCKET_METADATA_SELF_BYPASS) != 0U) return TC_ACT_UNSPEC;
     struct sb_tc_assign_key key;
     __u8 source_mac[6];
     if (!parse_flow(skb, control, SB_TC_FLAG_LOCAL_IPV6, ethernet, &key, source_mac)) return TC_ACT_UNSPEC;
-    if (!local_selected(skb, control, &key)) return TC_ACT_UNSPEC;
-    if (track_process) record_local_socket_cookie(skb, &key);
+    if (!local_selected(skb, control, &key, socket_metadata_value)) return TC_ACT_UNSPEC;
+    if (track_process) record_local_socket_cookie(&key, socket_cookie);
     return redirect_local(skb, control, ethernet);
 }
 
@@ -663,6 +797,60 @@ int singbox_tc_shared_ingress_raw_ip(struct __sk_buff *skb) {
     return shared_ingress(skb, false);
 }
 
+INLINE int shared_ingress_legacy(struct __sk_buff *skb, bool ethernet) {
+    const struct sb_tc_control *control = load_control();
+    if (control == 0 || control->enabled == 0U) return TC_ACT_UNSPEC;
+    struct sb_tc_assign_key key;
+    __u8 source_mac[6];
+    if (!parse_flow(skb, control, SB_TC_FLAG_SHARED_IPV6, ethernet, &key, source_mac)) return TC_ACT_UNSPEC;
+    if (!ethernet &&
+        (control->flags & (SB_TC_FLAG_INCLUDE_SOURCE_MAC | SB_TC_FLAG_EXCLUDE_SOURCE_MAC)) != 0U) {
+        return TC_ACT_UNSPEC;
+    }
+    if (!shared_selected(control, &key, source_mac)) return TC_ACT_UNSPEC;
+    skb->mark |= control->routing_mark;
+    __u8 path = SB_TC_PATH_SHARED;
+    if (ethernet) path |= SB_TC_PATH_SOURCE_MAC_VALID;
+    return assign_socket_legacy(skb, control, &key, source_mac, path);
+}
+
+SEC("classifier/shared_ingress_ethernet_legacy")
+int singbox_tc_shared_ingress_ethernet_legacy(struct __sk_buff *skb) {
+    return shared_ingress_legacy(skb, true);
+}
+
+SEC("classifier/shared_ingress_raw_ip_legacy")
+int singbox_tc_shared_ingress_raw_ip_legacy(struct __sk_buff *skb) {
+    return shared_ingress_legacy(skb, false);
+}
+
+INLINE int shared_ingress_udp(struct __sk_buff *skb, bool ethernet) {
+    const struct sb_tc_control *control = load_control();
+    if (control == 0 || control->enabled == 0U) return TC_ACT_UNSPEC;
+    struct sb_tc_assign_key key;
+    __u8 source_mac[6];
+    if (!parse_flow(skb, control, SB_TC_FLAG_SHARED_IPV6, ethernet, &key, source_mac)) return TC_ACT_UNSPEC;
+    if (!ethernet &&
+        (control->flags & (SB_TC_FLAG_INCLUDE_SOURCE_MAC | SB_TC_FLAG_EXCLUDE_SOURCE_MAC)) != 0U) {
+        return TC_ACT_UNSPEC;
+    }
+    if (!shared_selected(control, &key, source_mac)) return TC_ACT_UNSPEC;
+    skb->mark |= control->routing_mark;
+    __u8 path = SB_TC_PATH_SHARED;
+    if (ethernet) path |= SB_TC_PATH_SOURCE_MAC_VALID;
+    return assign_udp_socket(skb, control, &key, source_mac, path);
+}
+
+SEC("classifier/shared_ingress_ethernet_udp")
+int singbox_tc_shared_ingress_ethernet_udp(struct __sk_buff *skb) {
+    return shared_ingress_udp(skb, true);
+}
+
+SEC("classifier/shared_ingress_raw_ip_udp")
+int singbox_tc_shared_ingress_raw_ip_udp(struct __sk_buff *skb) {
+    return shared_ingress_udp(skb, false);
+}
+
 SEC("classifier/delivery_ingress")
 int singbox_tc_delivery_ingress(struct __sk_buff *skb) {
     const struct sb_tc_control *control = load_control();
@@ -672,6 +860,28 @@ int singbox_tc_delivery_ingress(struct __sk_buff *skb) {
     if (!parse_flow(skb, control, SB_TC_FLAG_LOCAL_IPV6, true, &key, source_mac)) return TC_ACT_UNSPEC;
     skb->mark |= control->routing_mark;
     return assign_socket(skb, control, &key, source_mac, SB_TC_PATH_DELIVERY);
+}
+
+SEC("classifier/delivery_ingress_legacy")
+int singbox_tc_delivery_ingress_legacy(struct __sk_buff *skb) {
+    const struct sb_tc_control *control = load_control();
+    if (control == 0 || control->enabled == 0U) return TC_ACT_UNSPEC;
+    struct sb_tc_assign_key key;
+    __u8 source_mac[6];
+    if (!parse_flow(skb, control, SB_TC_FLAG_LOCAL_IPV6, true, &key, source_mac)) return TC_ACT_UNSPEC;
+    skb->mark |= control->routing_mark;
+    return assign_socket_legacy(skb, control, &key, source_mac, SB_TC_PATH_DELIVERY);
+}
+
+SEC("classifier/delivery_ingress_udp")
+int singbox_tc_delivery_ingress_udp(struct __sk_buff *skb) {
+    const struct sb_tc_control *control = load_control();
+    if (control == 0 || control->enabled == 0U) return TC_ACT_UNSPEC;
+    struct sb_tc_assign_key key;
+    __u8 source_mac[6];
+    if (!parse_flow(skb, control, SB_TC_FLAG_LOCAL_IPV6, true, &key, source_mac)) return TC_ACT_UNSPEC;
+    skb->mark |= control->routing_mark;
+    return assign_udp_socket(skb, control, &key, source_mac, SB_TC_PATH_DELIVERY);
 }
 
 char _license[] SEC("license") = "GPL";

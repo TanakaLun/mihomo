@@ -126,6 +126,15 @@ func TestCompileBypassCIDRPolicy(t *testing.T) {
 	if !equalPrefixes(ipv4, expectedIPv4) || !equalPrefixes(ipv6, expectedIPv6) {
 		t.Fatalf("unexpected compiled CIDRs: IPv4=%v IPv6=%v", ipv4, ipv6)
 	}
+	policy := BypassCIDRPolicy{ipv4: ipv4, ipv6: ipv6}
+	prefixes := policy.Prefixes()
+	expectedPrefixes := append(append([]netip.Prefix(nil), ipv4...), ipv6...)
+	if !equalPrefixes(prefixes, expectedPrefixes) {
+		t.Fatalf("unexpected Prefixes(): %v != %v", prefixes, expectedPrefixes)
+	}
+	if countV4, countV6 := policy.Count(); countV4 != len(ipv4) || countV6 != len(ipv6) {
+		t.Fatalf("unexpected Count(): %d, %d != %d, %d", countV4, countV6, len(ipv4), len(ipv6))
+	}
 }
 
 func TestBypassCIDRPolicyDelta(t *testing.T) {

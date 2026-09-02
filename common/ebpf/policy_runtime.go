@@ -19,6 +19,36 @@ const (
 	maxSharedSourceMACPolicyEntries  = 1024
 )
 
+func populatePortPolicyMap(mapInstance *CiliumEBPF.Map, ranges []PortRange, enableTCP, enableUDP bool) error {
+	if mapInstance == nil {
+		return errBackendClosed
+	}
+	var entries []tcPortKey
+	for _, portRange := range ranges {
+		if portRange.Start == 0 || portRange.Start > portRange.End {
+			return E.New("invalid TC eBPF port bypass range")
+		}
+		for port := uint32(portRange.Start); port <= uint32(portRange.End); port++ {
+			if enableTCP {
+				entries = append(entries, tcPortKey{Protocol: ProtocolTCP, Port: uint16(port)})
+			}
+			if enableUDP {
+				entries = append(entries, tcPortKey{Protocol: ProtocolUDP, Port: uint16(port)})
+			}
+			if len(entries) > tcPortPolicyCapacity {
+				return E.New("TC eBPF port bypass policy exceeds map capacity")
+			}
+		}
+	}
+	value := uint8(1)
+	for _, entry := range entries {
+		if err := mapInstance.Update(&entry, &value, CiliumEBPF.UpdateAny); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 var (
 	uidPolicyUpdateBatchSupport  mapBatchSupport
 	bypassCIDRUpdateBatchSupport mapBatchSupport
