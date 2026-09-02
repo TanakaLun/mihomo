@@ -16,6 +16,9 @@ type EBPF struct {
 }
 
 type EBPFLocal struct {
+	Enabled              *bool    `json:"enabled" yaml:"enabled" inbound:"enabled,omitempty"`
+	DataPlane            string   `json:"data-plane" yaml:"data-plane" inbound:"data-plane,omitempty"`
+	CgroupPath           string   `json:"cgroup-path" yaml:"cgroup-path" inbound:"cgroup-path,omitempty"`
 	DNSMode              string   `json:"dns-mode" yaml:"dns-mode" inbound:"dns-mode,omitempty"`
 	IPv6                 *bool    `json:"ipv6" yaml:"ipv6" inbound:"ipv6,omitempty"`
 	BypassPrivateAddress *bool    `json:"bypass-private-address" yaml:"bypass-private-address" inbound:"bypass-private-address,omitempty"`
@@ -26,9 +29,13 @@ type EBPFLocal struct {
 	IncludeAndroidUser   []int    `json:"include-android-user" yaml:"include-android-user" inbound:"include-android-user,omitempty"`
 	IncludePackage       []string `json:"include-package" yaml:"include-package" inbound:"include-package,omitempty"`
 	ExcludePackage       []string `json:"exclude-package" yaml:"exclude-package" inbound:"exclude-package,omitempty"`
+	BypassPort           []uint16 `json:"bypass-port" yaml:"bypass-port" inbound:"bypass-port,omitempty"`
+	BypassPortRange      []string `json:"bypass-port-range" yaml:"bypass-port-range" inbound:"bypass-port-range,omitempty"`
 }
 
 type EBPFShared struct {
+	Enabled              *bool          `json:"enabled" yaml:"enabled" inbound:"enabled,omitempty"`
+	DataPlane            string         `json:"data-plane" yaml:"data-plane" inbound:"data-plane,omitempty"`
 	DNSMode              string         `json:"dns-mode" yaml:"dns-mode" inbound:"dns-mode,omitempty"`
 	Interface            []string       `json:"interface" yaml:"interface" inbound:"interface,omitempty"`
 	IPv6                 *bool          `json:"ipv6" yaml:"ipv6" inbound:"ipv6,omitempty"`
@@ -37,6 +44,8 @@ type EBPFShared struct {
 	ExcludeSourceCIDR    []netip.Prefix `json:"exclude-source-cidr" yaml:"exclude-source-cidr" inbound:"exclude-source-cidr,omitempty"`
 	IncludeMACAddress    []string       `json:"include-mac-address" yaml:"include-mac-address" inbound:"include-mac-address,omitempty"`
 	ExcludeMACAddress    []string       `json:"exclude-mac-address" yaml:"exclude-mac-address" inbound:"exclude-mac-address,omitempty"`
+	BypassPort           []uint16       `json:"bypass-port" yaml:"bypass-port" inbound:"bypass-port,omitempty"`
+	BypassPortRange      []string       `json:"bypass-port-range" yaml:"bypass-port-range" inbound:"bypass-port-range,omitempty"`
 }
 
 func (c EBPF) String() string {

@@ -364,7 +364,11 @@ func (i *Inbound) startSelfBypass() error {
 	if i.selfBypass == nil || i.selfBypassCgroup {
 		return nil
 	}
-	if err := i.selfBypass.AttachCgroup(); err != nil {
+	if err := i.selfBypass.AttachCgroup(ECommon.SelfBypassCgroupConfig{
+		EnableTCP:  i.enableTCP,
+		EnableUDP:  i.enableUDP,
+		EnableIPv6: i.localIPv6,
+	}); err != nil {
 		return err
 	}
 	i.selfBypassCgroup = true
