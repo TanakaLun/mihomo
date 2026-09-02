@@ -243,65 +243,65 @@ func (p *udpPacket) WriteBack(b []byte, addr net.Addr) (int, error) {
 	if p.clientState == nil {
 		return 0, E.New("missing eBPF UDP state for ", p.client)
 	}
-	p.inbound.lifecycleAccess.Lock()
-	defer p.inbound.lifecycleAccess.Unlock()
-	destinationAddress := destination.AddrPort()
-	binding, loaded := p.clientState.redirectBinding(destinationAddress)
-	if !loaded {
-		if p.clientState.isCgroupDataPlane() {
-			backend := p.inbound.cgroupBackendInstance()
-			if backend == nil {
-				return 0, E.New("cgroup eBPF backend is closed")
-			}
-			redirectAddress, err := backend.ReserveUDPReplyRedirect(destinationAddress, p.inbound.listeners.selectedPort())
-			if err != nil {
-				return 0, err
-			}
-			if !p.inbound.udpClientTable.setCgroupReplyBinding(p.client, p.clientState, destinationAddress, redirectAddress) {
-				_ = backend.DeleteRedirect(
-					ECommon.ProtocolUDP,
-					netip.AddrPortFrom(redirectAddress, p.inbound.listeners.selectedPort()),
-				)
-				return 0, E.New("cgroup eBPF UDP reply binding was rejected")
-			}
-			binding, loaded = p.clientState.redirectBinding(destinationAddress)
-			if !loaded {
-				return 0, E.New("cgroup eBPF UDP reply binding is unavailable")
-			}
-		}
-	}
-	if !loaded {
-		if !p.clientState.hasAddressFamily(destinationAddress.Addr().Is4()) {
-			return 0, E.New("eBPF UDP reply alias limit reached or address family unavailable")
-		}
-		installed := p.inbound.udpClientTable.setDirectReplyBinding(
-			p.client,
-			p.clientState,
-			destinationAddress,
-		)
-		if !installed {
-			return 0, E.New("eBPF UDP session closed or reply alias was rejected")
-		}
-		binding, loaded = p.clientState.redirectBinding(destinationAddress)
-		if !loaded {
-			return 0, E.New("eBPF UDP reply binding is unavailable")
-		}
-	}
-	if p.clientState.isCgroupDataPlane() {
-		if err := p.inbound.listeners.writeUDP(b, binding.packetInfo, p.client, binding.redirectAddress); err != nil {
-			return 0, err
-		}
-		return len(b), nil
-	}
-	socket, err := p.inbound.udpReplySockets.get(destinationAddress, p.inbound.newTCUDPReplySocket)
-	if err != nil {
-		return 0, err
-	}
-	_, err = socket.WriteToUDPAddrPort(b, p.client)
-	if err != nil {
+	if err := p.inbound.writeUDPReply(p.client, p.clientState, destination.AddrPort(), b); err != nil {
 		return 0, err
 	}
 	return len(b), nil
+}
+
+// writeUDPReply writes a UDP reply toward the client through the data plane of
+// the client's state: cgroup clients use the internal listener writeUDP with
+// the redirect address as source (the kernel restores the reply path), while
+// TC clients use a transparent reply socket bound to the original destination.
+func (i *Inbound) writeUDPReply(client netip.AddrPort, clientState *udpClientState, destinationAddress netip.AddrPort, payload []byte) error {
+	i.lifecycleAccess.Lock()
+	defer i.lifecycleAccess.Unlock()
+	binding, loaded := clientState.redirectBinding(destinationAddress)
+	if !loaded {
+		if clientState.isCgroupDataPlane() {
+			backend := i.cgroupBackendInstance()
+			if backend == nil {
+				return E.New("cgroup eBPF backend is closed")
+			}
+			redirectAddress, err := backend.ReserveUDPReplyRedirect(destinationAddress, i.listeners.selectedPort())
+			if err != nil {
+				return err
+			}
+			if !i.udpClientTable.setCgroupReplyBinding(client, clientState, destinationAddress, redirectAddress) {
+				_ = backend.DeleteRedirect(
+					ECommon.ProtocolUDP,
+					netip.AddrPortFrom(redirectAddress, i.listeners.selectedPort()),
+				)
+				return E.New("cgroup eBPF UDP reply binding was rejected")
+			}
+			binding, loaded = clientState.redirectBinding(destinationAddress)
+			if !loaded {
+				return E.New("cgroup eBPF UDP reply binding is unavailable")
+			}
+		}
+	}
+	if !loaded {
+		if !clientState.hasAddressFamily(destinationAddress.Addr().Is4()) {
+			return E.New("eBPF UDP reply alias limit reached or address family unavailable")
+		}
+		installed := i.udpClientTable.setDirectReplyBinding(client, clientState, destinationAddress)
+		if !installed {
+			return E.New("eBPF UDP session closed or reply alias was rejected")
+		}
+		binding, loaded = clientState.redirectBinding(destinationAddress)
+		if !loaded {
+			return E.New("eBPF UDP reply binding is unavailable")
+		}
+	}
+	if clientState.isCgroupDataPlane() {
+		return i.listeners.writeUDP(payload, binding.packetInfo, client, binding.redirectAddress)
+	}
+	socket, err := i.udpReplySockets.get(destinationAddress, i.newTCUDPReplySocket)
+	if err != nil {
+		return err
+	}
+	_, err = socket.WriteToUDPAddrPort(payload, client)
+	return err
 }
 
 func (p *udpPacket) Drop() {

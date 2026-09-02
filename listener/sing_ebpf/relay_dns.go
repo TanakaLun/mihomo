@@ -19,8 +19,8 @@ func (i *Inbound) relayTCPDNS(conn net.Conn) {
 }
 
 // relayUDPDNS relays a hijacked UDP DNS query into mihomo's resolver pipeline
-// and writes the reply back to the client through the TC reply socket bound to
-// the original destination.
+// and writes the reply back to the client through the client's data plane
+// (cgroup redirect write-back or the TC reply socket).
 func (i *Inbound) relayUDPDNS(data []byte, client netip.AddrPort, clientState *udpClientState, destination netip.AddrPort) {
 	ctx, cancel := context.WithTimeout(context.Background(), resolver.DefaultDnsRelayTimeout)
 	defer cancel()
@@ -30,24 +30,7 @@ func (i *Inbound) relayUDPDNS(data []byte, client netip.AddrPort, clientState *u
 		i.udpWarnings.originalDestination.warn(i.logWarn, "relay hijacked UDP DNS: ", err)
 		return
 	}
-	_, loaded := clientState.redirectBinding(destination)
-	if !loaded {
-		if !clientState.hasAddressFamily(destination.Addr().Is4()) {
-			i.udpWarnings.originalDestination.warn(i.logWarn, "TC eBPF UDP DNS reply alias limit reached")
-			return
-		}
-		installed := i.udpClientTable.setDirectReplyBinding(client, clientState, destination)
-		if !installed {
-			i.udpWarnings.originalDestination.warn(i.logWarn, "TC eBPF UDP DNS session closed or reply alias was rejected")
-			return
-		}
-	}
-	socket, err := i.udpReplySockets.get(destination, i.newTCUDPReplySocket)
-	if err != nil {
-		i.udpWarnings.cleanup.warn(i.logWarn, "bind TC eBPF UDP DNS reply socket: ", err)
-		return
-	}
-	if _, err = socket.WriteToUDPAddrPort(reply, client); err != nil {
+	if err := i.writeUDPReply(client, clientState, destination, reply); err != nil {
 		i.udpWarnings.cleanup.warn(i.logWarn, "write hijacked UDP DNS reply: ", err)
 	}
 }
