@@ -217,41 +217,67 @@ func (i *Inbound) updateTCInterfaces(ctx context.Context) {
 		i.interfaceWarnings.inventory.warn(i.logWarn, "update interfaces for TC eBPF: ", err)
 	}
 	defaultInterface := i.monitoredDefaultInterfaceName()
-	localInterface, err := availableLocalTCInterface(i.localEnabled, defaultInterface)
+	localTCEnabled := i.localTCEnabled()
+	localInterface, err := availableLocalTCInterface(localTCEnabled, defaultInterface)
 	if err != nil {
 		i.interfaceWarnings.topology.warn(i.logWarn, "inspect TC eBPF local interface: ", err)
 		return
 	}
-	if i.localEnabled && localInterface == "" {
-		i.interfaceWarnings.defaultInterface.warn(i.logWarn, "default interface unavailable; local TC eBPF interception is paused")
+	if localTCEnabled && localInterface == "" {
+		i.interfaceWarnings.defaultInterface.warn(i.logWarn, "default interface unavailable; retaining previous local TC attachment")
 	}
 	sharedInterfaces := activeSharedInterfaces(i.sharedOptions.Interface, defaultInterface)
+	tcSharedInterfaces := sharedInterfaces
+	if i.sharedRewriteEnabled() {
+		tcSharedInterfaces = nil
+	}
+	hostAddresses := i.hostAddresses()
+	if i.sharedRewrite != nil && i.sharedRewrite.dataPlane != nil {
+		previous := i.sharedRewrite.dataPlane.attachmentDescriptions()
+		if err = i.sharedRewrite.dataPlane.reconcile(sharedInterfaces, hostAddresses); err != nil {
+			i.interfaceWarnings.reconcile.warn(i.logWarn, "refresh shared packet-rewrite interfaces: ", err)
+		} else if attachments := i.sharedRewrite.dataPlane.attachmentDescriptions(); !slices.Equal(previous, attachments) {
+			log.Debugln("[EBPF] shared packet-rewrite attachments updated: attachments=[%s]", strings.Join(attachments, ", "))
+		}
+	}
 	infrastructureChanged, err := i.repairTCInfrastructure()
 	infrastructureHealthy := err == nil
 	if err != nil {
 		i.interfaceWarnings.infrastructure.warn(i.logWarn, "repair TC eBPF network state: ", err)
 	}
-	changed, err := i.tcAttachmentStateChanged(localInterface, sharedInterfaces)
+	changed, err := i.tcAttachmentStateChanged(localInterface, tcSharedInterfaces)
 	if err != nil {
 		i.interfaceWarnings.topology.warn(i.logWarn, "inspect TC eBPF interfaces: ", err)
 		return
 	}
-	hostAddresses := i.hostAddresses()
 	if !changed {
 		if err = i.updateTCHostAddresses(hostAddresses); err != nil {
 			i.interfaceWarnings.hostPolicy.warn(i.logWarn, "refresh TC eBPF host addresses: ", err)
+		}
+		if err = i.updateCgroupHostAddresses(hostAddresses); err != nil {
+			i.interfaceWarnings.hostPolicy.warn(i.logWarn, "refresh cgroup eBPF host addresses: ", err)
 		}
 		if infrastructureChanged && infrastructureHealthy {
 			log.Debugln("[EBPF] TC network state restored")
 		}
 		return
 	}
-	if err = i.reconcileTCDataPlane(localInterface, sharedInterfaces, hostAddresses); err != nil {
+	previousAttachments := i.tcAttachmentDescriptions()
+	if err = i.reconcileTCDataPlane(localInterface, tcSharedInterfaces, hostAddresses); err != nil {
 		i.interfaceWarnings.reconcile.warn(i.logWarn, "refresh TC eBPF interfaces: ", err)
 		return
 	}
-	log.Debugln("[EBPF] TC attachments updated: attachments=[%s]",
+	log.Debugln("[EBPF] TC attachments updated: %s -> [%s]",
+		strings.Join(previousAttachments, ", "),
 		strings.Join(i.tcAttachmentDescriptions(), ", "))
+}
+
+func (i *Inbound) updateCgroupHostAddresses(hostAddresses []netip.Addr) error {
+	cgroupBackend := i.cgroupBackendInstance()
+	if cgroupBackend == nil {
+		return nil
+	}
+	return cgroupBackend.UpdateHostAddresses(hostAddresses)
 }
 
 func (i *Inbound) repairTCInfrastructure() (bool, error) {

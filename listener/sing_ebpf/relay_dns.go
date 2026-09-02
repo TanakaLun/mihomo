@@ -51,3 +51,27 @@ func (i *Inbound) relayUDPDNS(data []byte, client netip.AddrPort, clientState *u
 		i.udpWarnings.cleanup.warn(i.logWarn, "write hijacked UDP DNS reply: ", err)
 	}
 }
+
+// relaySharedUDPDNS relays a hijacked shared-network UDP DNS query and writes
+// the reply back through the shared rewrite reply path.
+func (s *sharedRewrite) relaySharedUDPDNS(data []byte, client netip.AddrPort, clientState *sharedUDPClientState, destination netip.AddrPort) {
+	ctx, cancel := context.WithTimeout(context.Background(), resolver.DefaultDnsRelayTimeout)
+	defer cancel()
+	buff := make([]byte, resolver.SafeDnsPacketSize)
+	reply, err := resolver.RelayDnsPacket(ctx, data, buff)
+	if err != nil {
+		s.udpWarnings.originalDestination.warn(s.inbound.logWarn, "relay hijacked shared UDP DNS: ", err)
+		return
+	}
+	binding, loaded := clientState.redirectBinding(destination)
+	if !loaded {
+		writer := &sharedRewritePacket{shared: s, client: client, clientState: clientState}
+		if _, err = writer.WriteBack(reply, net.UDPAddrFromAddrPort(destination)); err != nil {
+			s.udpWarnings.cleanup.warn(s.inbound.logWarn, "write hijacked shared UDP DNS reply: ", err)
+		}
+		return
+	}
+	if err := s.listeners.writeUDP(reply, binding.packetInfo, client, binding.address); err != nil {
+		s.udpWarnings.cleanup.warn(s.inbound.logWarn, "write hijacked shared UDP DNS reply: ", err)
+	}
+}

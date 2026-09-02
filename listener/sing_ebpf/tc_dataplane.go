@@ -30,6 +30,13 @@ const (
 )
 
 var tcVethSequence atomic.Uint32
+var tcxSupport atomic.Int32
+
+const (
+	tcxSupportUnknown int32 = iota
+	tcxSupportAvailable
+	tcxSupportUnavailable = -1
+)
 
 type tcInterfaceRole struct {
 	local  bool
@@ -202,6 +209,9 @@ func (d *tcDataPlane) reconcile(localInterface string, sharedInterfaces []string
 	rollback := func(rollbackErr error) error {
 		for _, attachment := range d.attachments {
 			if role, loaded := previousRoles[attachment.interfaceName]; loaded && attachment.role != role {
+				if resetErr := attachment.resetAttachment(); resetErr != nil {
+					rollbackErr = E.Errors(rollbackErr, E.Cause(resetErr, "reset TC eBPF interface ", attachment.interfaceName))
+				}
 				if restoreErr := restoreTCInterfaceAttachment(netlink.LinkByName, d.backend, attachment, role, d.sharedSourceMACPolicy, d.priority); restoreErr != nil {
 					rollbackErr = E.Errors(rollbackErr, E.Cause(restoreErr, "rollback TC eBPF interface ", attachment.interfaceName))
 				}
@@ -219,11 +229,19 @@ func (d *tcDataPlane) reconcile(localInterface string, sharedInterfaces []string
 		state := desired[interfaceName]
 		previous := current[interfaceName]
 		if previous != nil && previous.interfaceIndex == state.index &&
-			previous.framing == state.framing && previous.role == state.role &&
-			attachmentFiltersComplete(previous) {
-			attachments = append(attachments, previous)
-			delete(current, interfaceName)
-			continue
+			previous.framing == state.framing && previous.role == state.role {
+			attached, checkErr := previous.filtersAttached(d.priority)
+			if checkErr != nil {
+				return rollback(E.Cause(checkErr, "inspect TC eBPF interface ", interfaceName))
+			}
+			if attached {
+				attachments = append(attachments, previous)
+				delete(current, interfaceName)
+				continue
+			}
+			if err = previous.resetAttachment(); err != nil {
+				return rollback(E.Cause(err, "reset TC eBPF interface ", interfaceName))
+			}
 		}
 		if previous != nil && previous.interfaceIndex == state.index && previous.framing == state.framing {
 			if err = updateTCInterfaceAttachment(
@@ -234,7 +252,21 @@ func (d *tcDataPlane) reconcile(localInterface string, sharedInterfaces []string
 				d.sharedSourceMACPolicy,
 				d.priority,
 			); err != nil {
-				return rollback(E.Cause(err, "update TC eBPF interface ", interfaceName))
+				updateErr := err
+				if resetErr := previous.resetAttachment(); resetErr != nil {
+					updateErr = E.Errors(updateErr, E.Cause(resetErr, "reset TC eBPF interface ", interfaceName))
+				}
+				if restoreErr := restoreTCInterfaceAttachment(
+					netlink.LinkByName,
+					d.backend,
+					previous,
+					previousRoles[interfaceName],
+					d.sharedSourceMACPolicy,
+					d.priority,
+				); restoreErr != nil {
+					updateErr = E.Errors(updateErr, E.Cause(restoreErr, "restore TC eBPF interface ", interfaceName))
+				}
+				return rollback(E.Cause(updateErr, "update TC eBPF interface ", interfaceName))
 			}
 			attachments = append(attachments, previous)
 			delete(current, interfaceName)
@@ -311,15 +343,6 @@ func (d *tcDataPlane) reconcile(localInterface string, sharedInterfaces []string
 	return closeErr
 }
 
-func attachmentFiltersComplete(attachment *tcInterfaceAttachment) bool {
-	if attachment == nil {
-		return false
-	}
-	local := attachment.localFilter != nil || attachment.localLink != nil
-	shared := attachment.sharedFilter != nil || attachment.sharedLink != nil
-	return (attachment.role.local == local) && (attachment.role.shared == shared)
-}
-
 func (d *tcDataPlane) desiredAttachmentState(localInterface string, sharedInterfaces []string) (map[string]tcAttachmentState, error) {
 	desired, err := desiredTCAttachmentState(localInterface, sharedInterfaces, netlink.LinkByName)
 	if err != nil {
@@ -354,6 +377,9 @@ func retainLocalAttachmentStates(localInterface string, desired map[string]tcAtt
 }
 
 func (a *tcInterfaceAttachment) filtersAttached(priority uint16) (bool, error) {
+	if a == nil {
+		return false, nil
+	}
 	link, err := netlink.LinkByName(a.interfaceName)
 	if err != nil && tcLinkNotFound(err) {
 		return false, nil
@@ -364,6 +390,30 @@ func (a *tcInterfaceAttachment) filtersAttached(priority uint16) (bool, error) {
 	if link.Attrs().Index != a.interfaceIndex {
 		return false, nil
 	}
+	if a.attachmentType == "tcx" {
+		if a.role.local {
+			attached, err := tcxLinkAttached(a.localLink, a.interfaceIndex, CiliumEBPF.AttachTCXEgress)
+			if err != nil {
+				return false, E.Cause(err, "inspect TCX local egress attachment on interface ", a.interfaceName)
+			}
+			if !attached {
+				return false, nil
+			}
+		}
+		if a.role.shared {
+			attached, err := tcxLinkAttached(a.sharedLink, a.interfaceIndex, CiliumEBPF.AttachTCXIngress)
+			if err != nil {
+				return false, E.Cause(err, "inspect TCX shared ingress attachment on interface ", a.interfaceName)
+			}
+			if !attached {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	if a.attachmentType != "clsact" {
+		return false, nil
+	}
 	if a.role.local {
 		attached, err := tcFilterAttached(
 			link,
@@ -372,8 +422,11 @@ func (a *tcInterfaceAttachment) filtersAttached(priority uint16) (bool, error) {
 			tcLocalFilterHandle,
 			priority,
 		)
-		if err != nil || !attached {
-			return attached, err
+		if err != nil {
+			return false, E.Cause(err, "inspect TC local egress filter on interface ", a.interfaceName)
+		}
+		if !attached {
+			return false, nil
 		}
 	}
 	if a.role.shared {
@@ -384,11 +437,30 @@ func (a *tcInterfaceAttachment) filtersAttached(priority uint16) (bool, error) {
 			tcSharedFilterHandle,
 			priority,
 		)
-		if err != nil || !attached {
-			return attached, err
+		if err != nil {
+			return false, E.Cause(err, "inspect TC shared ingress filter on interface ", a.interfaceName)
+		}
+		if !attached {
+			return false, nil
 		}
 	}
 	return true, nil
+}
+
+func tcxLinkAttached(current link.Link, interfaceIndex int, attachType CiliumEBPF.AttachType) (bool, error) {
+	if current == nil {
+		return false, nil
+	}
+	info, err := current.Info()
+	if err != nil {
+		if errors.Is(err, os.ErrClosed) || errors.Is(err, unix.EBADF) || tcLinkNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	tcx := info.TCX()
+	return info.Type == link.TCXType && tcx != nil &&
+		tcx.Ifindex == uint32(interfaceIndex) && uint32(tcx.AttachType) == uint32(attachType), nil
 }
 
 func (d *tcDataPlane) updateHostAddresses(hostAddresses []netip.Addr) error {
@@ -636,13 +708,20 @@ func attachTCInterfaceWithLock(
 	// TCX links do not expose the numeric TC priority. Preserve the existing
 	// tc_priority contract by using TCX only with the default priority.
 	if priority == 1 {
-		if tcxAttachment, tcxErr := attachTCXInterface(link, backend, attachment); tcxAttachment && tcxErr == nil {
-			attachment.attachmentType = "tcx"
-			return attachment, nil
+		if tcxSupport.Load() != tcxSupportUnavailable {
+			tcxAttachment, tcxErr := attachTCXInterface(link, backend, attachment)
+			if tcxErr == nil && tcxAttachment {
+				tcxSupport.Store(tcxSupportAvailable)
+				attachment.attachmentType = "tcx"
+				return attachment, nil
+			}
+			if tcxUnsupportedError(tcxErr) {
+				tcxSupport.CompareAndSwap(tcxSupportUnknown, tcxSupportUnavailable)
+			}
 		}
 	}
 	if err = ensureTCClsact(link); err != nil {
-		return cleanup(err)
+		return cleanup(E.Cause(err, "ensure TC clsact on interface ", interfaceName))
 	}
 	attachment.attachmentType = "clsact"
 	if state.role.local {
@@ -655,7 +734,7 @@ func attachTCInterfaceWithLock(
 			priority,
 		)
 		if err != nil {
-			return cleanup(err)
+			return cleanup(E.Cause(err, "attach TC local egress filter on interface ", interfaceName))
 		}
 	}
 	if state.role.shared {
@@ -668,10 +747,15 @@ func attachTCInterfaceWithLock(
 			priority,
 		)
 		if err != nil {
-			return cleanup(err)
+			return cleanup(E.Cause(err, "attach TC shared ingress filter on interface ", interfaceName))
 		}
 	}
 	return attachment, nil
+}
+
+func tcxUnsupportedError(err error) bool {
+	return err != nil && (errors.Is(err, CiliumEBPF.ErrNotSupported) ||
+		errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.ENOSYS))
 }
 
 func attachTCXInterface(linkDevice netlink.Link, backend *commonEBPF.TCBackend, attachment *tcInterfaceAttachment) (bool, error) {
@@ -746,8 +830,9 @@ func updateTCInterfaceAttachment(
 		}
 	}
 	if err = ensureTCClsact(link); err != nil {
-		return err
+		return E.Cause(err, "ensure TC clsact on interface ", attachment.interfaceName)
 	}
+	attachment.attachmentType = "clsact"
 	addedLocal := false
 	addedShared := false
 	if role.local && attachment.localFilter == nil {
@@ -760,7 +845,7 @@ func updateTCInterfaceAttachment(
 			priority,
 		)
 		if err != nil {
-			return err
+			return E.Cause(err, "attach TC local egress filter on interface ", attachment.interfaceName)
 		}
 		addedLocal = true
 	}
@@ -778,7 +863,7 @@ func updateTCInterfaceAttachment(
 				_ = detachTCFilter(attachment.localFilter)
 				attachment.localFilter = nil
 			}
-			return err
+			return E.Cause(err, "attach TC shared ingress filter on interface ", attachment.interfaceName)
 		}
 		addedShared = true
 	}
@@ -792,18 +877,27 @@ func updateTCInterfaceAttachment(
 				_ = detachTCFilter(attachment.localFilter)
 				attachment.localFilter = nil
 			}
-			return err
+			return E.Cause(err, "detach TC shared ingress filter from interface ", attachment.interfaceName)
 		}
 		attachment.sharedFilter = nil
 	}
 	if !role.local && attachment.localFilter != nil {
 		if err = detachTCFilter(attachment.localFilter); err != nil {
-			return err
+			return E.Cause(err, "detach TC local egress filter from interface ", attachment.interfaceName)
 		}
 		attachment.localFilter = nil
 	}
 	attachment.role = role
 	return nil
+}
+
+func (a *tcInterfaceAttachment) resetAttachment() error {
+	if a == nil {
+		return nil
+	}
+	closeErr := E.Errors(a.closeFilters(), a.closeLinks())
+	a.attachmentType = ""
+	return closeErr
 }
 
 func restoreTCInterfaceAttachment(

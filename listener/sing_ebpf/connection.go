@@ -4,6 +4,7 @@ package sing_ebpf
 
 import (
 	"encoding/binary"
+	"errors"
 	"net"
 	"net/netip"
 	"syscall"
@@ -18,12 +19,66 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// NewConnection handles a TCP connection accepted by the internal listeners.
+// It dispatches between the cgroup and TC data planes by the redirect address
+// the connection was steered into.
 func (i *Inbound) NewConnection(conn net.Conn) {
+	if i.localCgroupEnabled() {
+		localAddr, err := netip.ParseAddrPort(conn.LocalAddr().String())
+		if err == nil && i.isCgroupRedirectAddress(localAddr.Addr()) {
+			i.newCgroupTCPConnection(conn)
+			return
+		}
+	}
 	backend := i.tcBackend()
 	if backend == nil {
 		_ = conn.Close()
 		return
 	}
+	i.newTCConnection(backend, conn)
+}
+
+func (i *Inbound) newCgroupTCPConnection(conn net.Conn) {
+	backend := i.cgroupBackendInstance()
+	if backend == nil {
+		_ = conn.Close()
+		return
+	}
+	listenerDestination, err := netip.ParseAddrPort(conn.LocalAddr().String())
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	original, err := backend.TakeOriginal(ECommon.ProtocolTCP, listenerDestination)
+	if err != nil {
+		if !errors.Is(err, unix.ENOENT) {
+			i.udpWarnings.cleanup.warn(i.logWarn, "lookup cgroup eBPF TCP original destination: ", err)
+		}
+		_ = conn.Close()
+		return
+	}
+	source, err := netip.ParseAddrPort(conn.RemoteAddr().String())
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	if i.hijackDNS(original.Destination) {
+		go i.relayTCPDNS(conn)
+		return
+	}
+	metadata := &C.Metadata{
+		NetWork: C.TCP,
+		Type:    C.EBPF,
+		DstIP:   original.Destination.Addr().Unmap(),
+		DstPort: original.Destination.Port(),
+		SrcIP:   source.Addr().Unmap(),
+		SrcPort: source.Port(),
+	}
+	inbound.ApplyAdditions(metadata, i.additions...)
+	i.tunnel.HandleTCPConn(conn, metadata)
+}
+
+func (i *Inbound) newTCConnection(backend *ECommon.TCBackend, conn net.Conn) {
 	source, err := netip.ParseAddrPort(conn.RemoteAddr().String())
 	if err != nil {
 		_ = conn.Close()
@@ -56,11 +111,58 @@ func (i *Inbound) NewConnection(conn net.Conn) {
 	i.tunnel.HandleTCPConn(conn, metadata)
 }
 
+// NewPacket handles a UDP datagram received by the internal listeners.
 func (i *Inbound) NewPacket(data []byte, oob []byte, source netip.AddrPort) {
+	if i.localCgroupEnabled() {
+		if redirectAddress, err := redirectAddressFromOOB(oob); err == nil && i.isCgroupRedirectAddress(redirectAddress) {
+			i.newCgroupPacket(data, oob, source)
+			return
+		}
+	}
 	backend := i.tcBackend()
 	if backend == nil {
 		return
 	}
+	i.newTCPacket(backend, data, oob, source)
+}
+
+func (i *Inbound) newCgroupPacket(data []byte, oob []byte, source netip.AddrPort) {
+	redirectAddress, _, _, err := packetDestinationsFromOOB(oob)
+	if err != nil {
+		i.udpWarnings.packetInfo.warn(i.logWarn, "read cgroup eBPF UDP redirect address: ", err)
+		return
+	}
+	backend := i.cgroupBackendInstance()
+	if backend == nil || !i.isCgroupRedirectAddress(redirectAddress) {
+		i.udpWarnings.originalDestination.warn(i.logWarn, "cgroup eBPF UDP redirect address is not owned: ", redirectAddress)
+		return
+	}
+	client := source
+	redirectDestination := netip.AddrPortFrom(redirectAddress, i.listeners.selectedPort())
+	original, loaded := i.udpClientTable.cachedCgroupOriginal(client, redirectAddress)
+	if !loaded {
+		original, err = backend.LookupOriginal(ECommon.ProtocolUDP, redirectDestination)
+		if errors.Is(err, unix.ENOENT) {
+			original, err = backend.RecoverUDPOriginal(redirectDestination)
+		}
+		if errors.Is(err, unix.ENOENT) {
+			original, err = backend.RecoverConnectedUDPOriginal(redirectDestination)
+		}
+		if err != nil {
+			i.udpWarnings.originalDestination.warn(i.logWarn, "lookup cgroup eBPF UDP original destination: ", err)
+			return
+		}
+		i.udpClientTable.setCgroupBinding(client, original, redirectAddress)
+	}
+	if i.hijackDNS(original.Destination) {
+		clientState := i.udpClientTable.loadOrCreate(client)
+		i.relayUDPDNS(data, client, clientState, original.Destination)
+		return
+	}
+	i.forwardLocalUDP(data, client, original.Destination, original.ConnectedUDP)
+}
+
+func (i *Inbound) newTCPacket(backend *ECommon.TCBackend, data []byte, oob []byte, source netip.AddrPort) {
 	_, destination, interfaceIndex, err := packetDestinationsFromOOB(oob)
 	if err != nil {
 		i.udpWarnings.packetInfo.warn(i.logWarn, "read TC eBPF UDP destination: ", err)
@@ -89,6 +191,13 @@ func (i *Inbound) NewPacket(data []byte, oob []byte, source netip.AddrPort) {
 		i.relayUDPDNS(data, client, clientState, destination)
 		return
 	}
+	i.forwardLocalUDP(data, client, destination, false)
+}
+
+// forwardLocalUDP forwards a UDP datagram from a local or TC client to the
+// mihomo tunnel with per-packet write-back through the reply socket / cgroup
+// redirect as selected by the client's data plane.
+func (i *Inbound) forwardLocalUDP(data []byte, client netip.AddrPort, destination netip.AddrPort, connected bool) {
 	metadata := &C.Metadata{
 		NetWork: C.UDP,
 		Type:    C.EBPF,
@@ -132,13 +241,38 @@ func (p *udpPacket) WriteBack(b []byte, addr net.Addr) (int, error) {
 		return 0, E.New("invalid UDP reply address")
 	}
 	if p.clientState == nil {
-		return 0, E.New("missing TC eBPF UDP state for ", p.client)
+		return 0, E.New("missing eBPF UDP state for ", p.client)
 	}
+	p.inbound.lifecycleAccess.Lock()
+	defer p.inbound.lifecycleAccess.Unlock()
 	destinationAddress := destination.AddrPort()
-	_, loaded := p.clientState.redirectBinding(destinationAddress)
+	binding, loaded := p.clientState.redirectBinding(destinationAddress)
+	if !loaded {
+		if p.clientState.isCgroupDataPlane() {
+			backend := p.inbound.cgroupBackendInstance()
+			if backend == nil {
+				return 0, E.New("cgroup eBPF backend is closed")
+			}
+			redirectAddress, err := backend.ReserveUDPReplyRedirect(destinationAddress, p.inbound.listeners.selectedPort())
+			if err != nil {
+				return 0, err
+			}
+			if !p.inbound.udpClientTable.setCgroupReplyBinding(p.client, p.clientState, destinationAddress, redirectAddress) {
+				_ = backend.DeleteRedirect(
+					ECommon.ProtocolUDP,
+					netip.AddrPortFrom(redirectAddress, p.inbound.listeners.selectedPort()),
+				)
+				return 0, E.New("cgroup eBPF UDP reply binding was rejected")
+			}
+			binding, loaded = p.clientState.redirectBinding(destinationAddress)
+			if !loaded {
+				return 0, E.New("cgroup eBPF UDP reply binding is unavailable")
+			}
+		}
+	}
 	if !loaded {
 		if !p.clientState.hasAddressFamily(destinationAddress.Addr().Is4()) {
-			return 0, E.New("TC eBPF UDP reply alias limit reached or address family unavailable")
+			return 0, E.New("eBPF UDP reply alias limit reached or address family unavailable")
 		}
 		installed := p.inbound.udpClientTable.setDirectReplyBinding(
 			p.client,
@@ -146,8 +280,18 @@ func (p *udpPacket) WriteBack(b []byte, addr net.Addr) (int, error) {
 			destinationAddress,
 		)
 		if !installed {
-			return 0, E.New("TC eBPF UDP session closed or reply alias was rejected")
+			return 0, E.New("eBPF UDP session closed or reply alias was rejected")
 		}
+		binding, loaded = p.clientState.redirectBinding(destinationAddress)
+		if !loaded {
+			return 0, E.New("eBPF UDP reply binding is unavailable")
+		}
+	}
+	if p.clientState.isCgroupDataPlane() {
+		if err := p.inbound.listeners.writeUDP(b, binding.packetInfo, p.client, binding.redirectAddress); err != nil {
+			return 0, err
+		}
+		return len(b), nil
 	}
 	socket, err := p.inbound.udpReplySockets.get(destinationAddress, p.inbound.newTCUDPReplySocket)
 	if err != nil {
@@ -195,12 +339,12 @@ func (i *Inbound) newTCUDPReplySocket(source netip.AddrPort) (*net.UDPConn, erro
 	}}
 	packetConnection, err := listenConfig.ListenPacket(contextBackground(), network, source.String())
 	if err != nil {
-		return nil, E.Cause(err, "bind TC eBPF UDP reply socket to ", source)
+		return nil, E.Cause(err, "bind eBPF UDP reply socket to ", source)
 	}
 	udpConnection, loaded := packetConnection.(*net.UDPConn)
 	if !loaded {
 		_ = packetConnection.Close()
-		return nil, E.New("TC eBPF UDP reply socket has unexpected type")
+		return nil, E.New("eBPF UDP reply socket has unexpected type")
 	}
 	return udpConnection, nil
 }
