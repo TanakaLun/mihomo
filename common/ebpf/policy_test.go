@@ -126,14 +126,41 @@ func TestCompileBypassCIDRPolicy(t *testing.T) {
 	if !equalPrefixes(ipv4, expectedIPv4) || !equalPrefixes(ipv6, expectedIPv6) {
 		t.Fatalf("unexpected compiled CIDRs: IPv4=%v IPv6=%v", ipv4, ipv6)
 	}
-	policy := BypassCIDRPolicy{ipv4: ipv4, ipv6: ipv6}
-	prefixes := policy.Prefixes()
-	expectedPrefixes := append(append([]netip.Prefix(nil), ipv4...), ipv6...)
-	if !equalPrefixes(prefixes, expectedPrefixes) {
-		t.Fatalf("unexpected Prefixes(): %v != %v", prefixes, expectedPrefixes)
+}
+
+func TestCompilePolicySnapshot(t *testing.T) {
+	includeUID := []UIDRange{{Start: 1000, End: 1002}}
+	includeSource := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
+	includeMAC := []MACAddress{{0x02, 0, 0, 0, 0, 1}}
+	policy, err := CompilePolicy(PolicyConfig{
+		EnableTCP:           true,
+		EnableUDP:           true,
+		Local:               LocalPolicy{IncludeUID: includeUID},
+		SharedDNSMode:       DNSModeRespectPolicy,
+		SharedBypassPrivate: true,
+		FakeIPIPv4:          netip.MustParsePrefix("198.18.1.1/15"),
+		IncludeSourceCIDR:   includeSource,
+		IncludeSourceMAC:    includeMAC,
+		LocalBypassPort:     []PortRange{{Start: 443, End: 443}},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if countV4, countV6 := policy.Count(); countV4 != len(ipv4) || countV6 != len(ipv6) {
-		t.Fatalf("unexpected Count(): %d, %d != %d, %d", countV4, countV6, len(ipv4), len(ipv6))
+	if len(policy.uidEntries) == 0 || !policy.uidDefaultBypass ||
+		len(policy.includeSource.ipv4) != 1 || len(policy.includeSourceMAC) != 1 ||
+		len(policy.localBypassPortEntries) != 2 {
+		t.Fatalf("compiled policy omitted configured rules: %+v", policy)
+	}
+	if policy.fakeIPIPv4 != netip.MustParsePrefix("198.18.0.0/15") {
+		t.Fatalf("FakeIP prefix was not normalized: %s", policy.fakeIPIPv4)
+	}
+	includeUID[0].Start = 2000
+	includeSource[0] = netip.MustParsePrefix("203.0.113.0/24")
+	includeMAC[0][0] = 0x06
+	if policy.local.IncludeUID[0].Start != 1000 ||
+		policy.includeSource.ipv4[0] != netip.MustParsePrefix("192.0.2.0/24") ||
+		policy.includeSourceMAC[0][0] != 0x02 {
+		t.Fatal("compiled policy retained mutable input slices")
 	}
 }
 

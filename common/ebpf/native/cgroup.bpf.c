@@ -3,6 +3,7 @@
 
 #include "abi.h"
 #include "bpf_compat.h"
+#include "fakeip_policy.h"
 #include "private_address.h"
 
 #include <linux/bpf.h>
@@ -157,16 +158,6 @@ INLINE bool host_ipv6(const __u32 address[4]) {
     struct sb_ebpf_ipv6_cidr_lpm_key key = {.prefixlen = 128U};
     __builtin_memcpy(key.addr, address, sizeof(key.addr));
     return map_lookup(&cgroup_host_ipv6, &key) != 0;
-}
-
-INLINE bool fakeip_ipv4(const struct sb_ebpf_cgroup_control *config, const __u8 address[4]) {
-    return (config->flags & SB_EBPF_CGROUP_FLAG_FAKEIP_IPV4) != 0U &&
-        sb_ebpf_ipv4_prefix_match(address, config->fakeip_ipv4_prefix, config->fakeip_ipv4_mask);
-}
-
-INLINE bool fakeip_ipv6(const struct sb_ebpf_cgroup_control *config, const __u8 address[16]) {
-    return (config->flags & SB_EBPF_CGROUP_FLAG_FAKEIP_IPV6) != 0U &&
-        sb_ebpf_prefix_match(address, config->fakeip_ipv6_prefix, config->fakeip_ipv6_mask);
 }
 
 INLINE bool base_bypass(void *ctx, const struct sb_ebpf_cgroup_control *config, __u8 protocol, __u16 port) {
@@ -599,7 +590,12 @@ INLINE int handle_v4(
     if (!intercept_dns) {
         if (sb_ebpf_ipv4_safety_bypass(destination_bytes)) return 1;
         if ((config->flags & SB_EBPF_CGROUP_FLAG_HOST_IPV4) != 0U && host_ipv4(destination)) return 1;
-        bool force_fakeip = fakeip_ipv4(config, destination_bytes);
+        bool force_fakeip = sb_ebpf_must_intercept_fakeip_ipv4(
+            destination_bytes,
+            config->flags,
+            SB_EBPF_CGROUP_FLAG_FAKEIP_IPV4,
+            config->fakeip_ipv4_prefix,
+            config->fakeip_ipv4_mask);
         if (!force_fakeip &&
             (((config->flags & SB_EBPF_CGROUP_FLAG_BYPASS_PRIVATE_ADDRESS) != 0U &&
                 sb_ebpf_ipv4_private_address(destination_bytes)) ||
@@ -693,7 +689,12 @@ INLINE int handle_v6(
         if (!intercept_dns) {
             if (sb_ebpf_ipv4_safety_bypass(destination_bytes)) return 1;
             if ((config->flags & SB_EBPF_CGROUP_FLAG_HOST_IPV4) != 0U && host_ipv4(destination)) return 1;
-            bool force_fakeip = fakeip_ipv4(config, destination_bytes);
+            bool force_fakeip = sb_ebpf_must_intercept_fakeip_ipv4(
+                destination_bytes,
+                config->flags,
+                SB_EBPF_CGROUP_FLAG_FAKEIP_IPV4,
+                config->fakeip_ipv4_prefix,
+                config->fakeip_ipv4_mask);
             if (!force_fakeip &&
                 (((config->flags & SB_EBPF_CGROUP_FLAG_BYPASS_PRIVATE_ADDRESS) != 0U &&
                     sb_ebpf_ipv4_private_address(destination_bytes)) ||
@@ -758,7 +759,12 @@ INLINE int handle_v6(
     if (!intercept_dns) {
         if (sb_ebpf_ipv6_safety_bypass((const __u8 *)address)) return 1;
         if ((config->flags & SB_EBPF_CGROUP_FLAG_HOST_IPV6) != 0U && host_ipv6(address)) return 1;
-        bool force_fakeip = fakeip_ipv6(config, (const __u8 *)address);
+        bool force_fakeip = sb_ebpf_must_intercept_fakeip_ipv6(
+            (const __u8 *)address,
+            config->flags,
+            SB_EBPF_CGROUP_FLAG_FAKEIP_IPV6,
+            config->fakeip_ipv6_prefix,
+            config->fakeip_ipv6_mask);
         if (!force_fakeip &&
             (((config->flags & SB_EBPF_CGROUP_FLAG_BYPASS_PRIVATE_ADDRESS) != 0U &&
                 sb_ebpf_ipv6_private_address((const __u8 *)address)) ||

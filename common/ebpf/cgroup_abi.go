@@ -115,13 +115,10 @@ type CgroupConfig struct {
 	EnableIPv6    bool
 	RedirectIPv4  netip.Prefix
 	RedirectIPv6  netip.Prefix
-	FakeIPIPv4    netip.Prefix
-	FakeIPIPv6    netip.Prefix
 	MapCapacity   CgroupMapCapacity
 	UDPTimeout    time.Duration
-	Policy        LocalPolicy
+	Policy        CompiledPolicy
 	SelfBypassMap *CiliumEBPF.Map
-	BypassPort    []PortRange
 }
 
 func DefaultCgroupMapCapacity() CgroupMapCapacity {

@@ -15,6 +15,15 @@ func TestTCABI(t *testing.T) {
 	if offset := unsafe.Offsetof(tcControl{}.RoutingMark); offset != 12 {
 		t.Fatalf("unexpected TC routing mark offset: %d", offset)
 	}
+	if offset := unsafe.Offsetof(tcControl{}.DeliveryInterface); offset != 8 {
+		t.Fatalf("unexpected TC delivery interface offset: %d", offset)
+	}
+	if offset := unsafe.Offsetof(tcControl{}.ListenerPort); offset != 16 {
+		t.Fatalf("unexpected TC listener port offset: %d", offset)
+	}
+	if offset := unsafe.Offsetof(tcControl{}.FakeIPIPv6Mask); offset != 54 {
+		t.Fatalf("unexpected TC IPv6 FakeIP mask offset: %d", offset)
+	}
 	if size := unsafe.Sizeof(tcAssignKey{}); size != 44 {
 		t.Fatalf("unexpected TC assignment key size: %d", size)
 	}
@@ -24,18 +33,21 @@ func TestTCABI(t *testing.T) {
 	if offset := unsafe.Offsetof(TCAssignment{}.SocketCookie); offset != 0 {
 		t.Fatalf("unexpected TC assignment socket cookie offset: %d", offset)
 	}
+	if offset := unsafe.Offsetof(TCAssignment{}.InterfaceIndex); offset != 8 {
+		t.Fatalf("unexpected TC assignment interface index offset: %d", offset)
+	}
 }
 
 func TestTCIPv6PathFlags(t *testing.T) {
-	localFlags := tcFlags(TCConfig{EnableLocalIPv6: true}, false, false)
+	localFlags := tcFlags(TCConfig{EnableLocalIPv6: true}, CompiledPolicy{})
 	if localFlags&tcFlagLocalIPv6 == 0 || localFlags&tcFlagSharedIPv6 != 0 {
 		t.Fatalf("unexpected local IPv6 flags: %#x", localFlags)
 	}
-	sharedFlags := tcFlags(TCConfig{EnableSharedIPv6: true}, false, false)
+	sharedFlags := tcFlags(TCConfig{EnableSharedIPv6: true}, CompiledPolicy{})
 	if sharedFlags&tcFlagLocalIPv6 != 0 || sharedFlags&tcFlagSharedIPv6 == 0 {
 		t.Fatalf("unexpected shared IPv6 flags: %#x", sharedFlags)
 	}
-	hybridFlags := tcFlags(TCConfig{EnableLocalIPv6: true, EnableSharedIPv6: true}, false, false)
+	hybridFlags := tcFlags(TCConfig{EnableLocalIPv6: true, EnableSharedIPv6: true}, CompiledPolicy{})
 	if hybridFlags&(tcFlagLocalIPv6|tcFlagSharedIPv6) != tcFlagLocalIPv6|tcFlagSharedIPv6 {
 		t.Fatalf("unexpected hybrid IPv6 flags: %#x", hybridFlags)
 	}

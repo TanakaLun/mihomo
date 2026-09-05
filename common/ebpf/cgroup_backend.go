@@ -126,14 +126,9 @@ func PrepareCgroup(config CgroupConfig) (*CgroupBackend, error) {
 	redirectIPv6 := config.RedirectIPv6
 	mapCapacity := config.MapCapacity
 	policy := config.Policy
-	fakeIPIPv4, err := normalizeAddressPrefix("IPv4 FakeIP range", config.FakeIPIPv4, true)
-	if err != nil {
-		return nil, err
-	}
-	fakeIPIPv6, err := normalizeAddressPrefix("IPv6 FakeIP range", config.FakeIPIPv6, false)
-	if err != nil {
-		return nil, err
-	}
+	var err error
+	fakeIPIPv4 := policy.fakeIPIPv4
+	fakeIPIPv6 := policy.fakeIPIPv6
 	if err := validateCgroupMapCapacity(mapCapacity); err != nil {
 		return nil, err
 	}
@@ -171,10 +166,7 @@ func PrepareCgroup(config CgroupConfig) (*CgroupBackend, error) {
 			return nil, err
 		}
 	}
-	uidPolicyEntries, uidDefaultBypass, err := compileUIDPolicy(policy)
-	if err != nil {
-		return nil, err
-	}
+	uidPolicyEntries, uidDefaultBypass := policy.uidEntries, policy.uidDefaultBypass
 	if err = checkLPMTriePolicyCompatibility("UID", len(uidPolicyEntries)); err != nil {
 		return nil, err
 	}
@@ -226,9 +218,9 @@ func PrepareCgroup(config CgroupConfig) (*CgroupBackend, error) {
 		enable_udp:               config.EnableUDP,
 		uid_policy:               len(uidPolicyEntries) > 0 || uidDefaultBypass,
 		uid_default_bypass:       uidDefaultBypass,
-		bypass_ipv4_policy:       policy.EnableBypassCIDR && redirectIPv4.IsValid(),
-		bypass_ipv6_policy:       policy.EnableBypassCIDR && redirectIPv6.IsValid(),
-		bypass_port_policy:       len(config.BypassPort) > 0,
+		bypass_ipv4_policy:       policy.local.EnableBypassCIDR && redirectIPv4.IsValid(),
+		bypass_ipv6_policy:       policy.local.EnableBypassCIDR && redirectIPv6.IsValid(),
+		bypass_port_policy:       len(policy.localBypassPortEntries) > 0,
 		socket_release_supported: socketReleaseSupported,
 		coarse_time_supported:    coarseTimeSupported,
 		socket_storage_supported: socketStorageSupported,
@@ -260,17 +252,17 @@ func PrepareCgroup(config CgroupConfig) (*CgroupBackend, error) {
 		fakeIPIPv6:           fakeIPIPv6,
 		enableIPv6:           config.EnableIPv6,
 		enableUDP:            config.EnableUDP,
-		dnsMode:              policy.DNSMode,
-		bypassPrivateAddress: policy.BypassPrivateAddress,
+		dnsMode:              policy.local.DNSMode,
+		bypassPrivateAddress: policy.local.BypassPrivateAddress,
 		udpTimeoutSeconds:    udpTimeoutSeconds,
 	}
-	if err = populateUIDPolicyMap(runtimeState.maps["cgroup_uid_policy"], uidPolicyEntries); err != nil {
+	if err = populateCompiledPolicyMaps(policyMapTargets{
+		Scope:     "cgroup eBPF",
+		UID:       runtimeState.maps["cgroup_uid_policy"],
+		LocalPort: runtimeState.maps["cgroup_bypass_port"],
+	}, policy); err != nil {
 		_ = backend.Close()
-		return nil, E.Cause(err, "populate UID policy eBPF map")
-	}
-	if err = populatePortPolicyMap(runtimeState.maps["cgroup_bypass_port"], config.BypassPort, config.EnableTCP, config.EnableUDP); err != nil {
-		_ = backend.Close()
-		return nil, E.Cause(err, "populate cgroup eBPF port bypass policy")
+		return nil, err
 	}
 	return backend, nil
 }

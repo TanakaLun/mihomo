@@ -214,47 +214,22 @@ func (b *CgroupBackend) cgroupProgramSection(slot int) string {
 }
 
 func (b *CgroupBackend) updateCgroupControl(listenerPort uint16) error {
-	var flags uint32
-	if b.runtime.enable_tcp {
-		flags |= cgroupFlagTCP
-	}
-	if b.runtime.enable_udp {
-		flags |= cgroupFlagUDP
-	}
-	if b.redirectIPv4.IsValid() {
-		flags |= cgroupFlagIPv4
-	}
-	if b.enableIPv6 {
-		flags |= cgroupFlagIPv6
-	}
-	if b.bypassPrivateAddress {
-		flags |= cgroupFlagBypassPrivateAddress
-	}
-	if b.runtime.uid_policy {
-		flags |= cgroupFlagUIDPolicy
-	}
-	if b.runtime.uid_default_bypass {
-		flags |= cgroupFlagUIDDefaultBypass
-	}
-	if b.runtime.bypass_ipv4_policy {
-		flags |= cgroupFlagBypassIPv4
-	}
-	if b.runtime.bypass_ipv6_policy {
-		flags |= cgroupFlagBypassIPv6
-	}
-	if b.runtime.bypass_port_policy {
-		flags |= cgroupFlagBypassPort
-	}
-	flags |= b.hostAddressFlags()
-	if b.runtime.enable_udp {
-		flags |= cgroupFlagUDPFlow
-	}
-	if b.fakeIPIPv4.IsValid() {
-		flags |= cgroupFlagFakeIPIPv4
-	}
-	if b.fakeIPIPv6.IsValid() {
-		flags |= cgroupFlagFakeIPIPv6
-	}
+	flags := policyVector{
+		EnableTCP:          b.runtime.enable_tcp,
+		EnableUDP:          b.runtime.enable_udp,
+		EnableIPv4:         b.redirectIPv4.IsValid(),
+		EnableLocalIPv6:    b.enableIPv6,
+		UIDPolicy:          b.runtime.uid_policy,
+		UIDDefaultBypass:   b.runtime.uid_default_bypass,
+		LocalBypassPrivate: b.bypassPrivateAddress,
+		BypassIPv4:         b.runtime.bypass_ipv4_policy,
+		BypassIPv6:         b.runtime.bypass_ipv6_policy,
+		HostIPv4:           len(b.hostIPv4) > 0,
+		HostIPv6:           b.enableIPv6 && len(b.hostIPv6) > 0,
+		LocalBypassPort:    b.runtime.bypass_port_policy,
+		FakeIPIPv4:         b.fakeIPIPv4.IsValid(),
+		FakeIPIPv6:         b.fakeIPIPv6.IsValid(),
+	}.cgroupFlags()
 	ipv4Prefix, ipv4HostMask := cgroupIPv4Redirect(b.redirectIPv4)
 	control := cgroupControl{
 		Flags:                flags,
@@ -278,15 +253,4 @@ func (b *CgroupBackend) updateCgroupControl(listenerPort uint16) error {
 	}
 	key := uint32(0)
 	return updateMap(b.runtime.control_map_fd, unsafe.Pointer(&key), unsafe.Pointer(&control))
-}
-
-func (b *CgroupBackend) hostAddressFlags() uint32 {
-	var flags uint32
-	if len(b.hostIPv4) > 0 {
-		flags |= cgroupFlagHostIPv4
-	}
-	if b.enableIPv6 && len(b.hostIPv6) > 0 {
-		flags |= cgroupFlagHostIPv6
-	}
-	return flags
 }

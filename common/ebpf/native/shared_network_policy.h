@@ -4,6 +4,8 @@
 #ifndef SING_BOX_EBPF_SHARED_NETWORK_POLICY_H
 #define SING_BOX_EBPF_SHARED_NETWORK_POLICY_H
 
+#include "fakeip_policy.h"
+
 INLINE bool selected_protocol(__u8 protocol, const struct sb_shared_control *control) {
     if (protocol == IPPROTO_TCP_VALUE) return (control->flags & SB_SHARED_FLAG_TCP) != 0U;
     if (protocol == IPPROTO_UDP_VALUE) return (control->flags & SB_SHARED_FLAG_UDP) != 0U;
@@ -81,22 +83,6 @@ INLINE bool ipv6_client_selected(
     return source_mac_selected(source_mac, flags) && ipv6_source_selected(source, flags);
 }
 
-INLINE bool shared_fakeip_ipv4(const __u8 destination[4], const struct sb_shared_control *control) {
-    return (control->flags & SB_SHARED_FLAG_FAKEIP_IPV4) != 0U &&
-        sb_ebpf_ipv4_prefix_match(
-            destination,
-            control->fakeip_ipv4_prefix,
-            control->fakeip_ipv4_mask);
-}
-
-INLINE bool shared_fakeip_ipv6(const __u8 destination[16], const struct sb_shared_control *control) {
-    return (control->flags & SB_SHARED_FLAG_FAKEIP_IPV6) != 0U &&
-        sb_ebpf_prefix_match(
-            destination,
-            control->fakeip_ipv6_prefix,
-            control->fakeip_ipv6_mask);
-}
-
 NOINLINE __u8 shared_dns_policy(
     __u8 protocol,
     __u16 source_port,
@@ -122,7 +108,12 @@ NOINLINE __u8 ipv4_policy(
     __builtin_memcpy(key.addr, destination, 4U);
     if ((map_policy_flags & SB_SHARED_FLAG_HOST_IPV4) != 0U &&
         map_lookup(&shared_host_ipv4, &key) != 0) return SB_SHARED_POLICY_BYPASS;
-    if (shared_fakeip_ipv4(destination, control)) return SB_SHARED_POLICY_PROXY;
+    if (sb_ebpf_must_intercept_fakeip_ipv4(
+        destination,
+        control->flags,
+        SB_SHARED_FLAG_FAKEIP_IPV4,
+        control->fakeip_ipv4_prefix,
+        control->fakeip_ipv4_mask)) return SB_SHARED_POLICY_PROXY;
     if ((control->flags & SB_SHARED_FLAG_BYPASS_PRIVATE_ADDRESS) != 0U &&
         sb_ebpf_ipv4_private_address(destination)) return SB_SHARED_POLICY_BYPASS;
     if (map_policy_flags == 0U) return SB_SHARED_POLICY_PROXY;
@@ -146,7 +137,12 @@ NOINLINE __u8 ipv6_policy(
     if ((map_policy_flags & SB_SHARED_FLAG_HOST_IPV6) != 0U && map_lookup(&shared_host_ipv6, &key) != 0) {
         return SB_SHARED_POLICY_BYPASS;
     }
-    if (shared_fakeip_ipv6(destination, control)) return SB_SHARED_POLICY_PROXY;
+    if (sb_ebpf_must_intercept_fakeip_ipv6(
+        destination,
+        control->flags,
+        SB_SHARED_FLAG_FAKEIP_IPV6,
+        control->fakeip_ipv6_prefix,
+        control->fakeip_ipv6_mask)) return SB_SHARED_POLICY_PROXY;
     if ((control->flags & SB_SHARED_FLAG_BYPASS_PRIVATE_ADDRESS) != 0U &&
         sb_ebpf_ipv6_private_address(destination)) return SB_SHARED_POLICY_BYPASS;
     if (map_policy_flags == 0U) return SB_SHARED_POLICY_PROXY;

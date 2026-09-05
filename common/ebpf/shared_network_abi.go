@@ -14,22 +14,14 @@ import (
 const sharedNetworkTCPReleaseGrace = time.Second
 
 type SharedNetworkConfig struct {
-	ListenerPort         uint16
-	EnableTCP            bool
-	EnableUDP            bool
-	DNSMode              DNSMode
-	BypassPrivateAddress bool
-	RedirectIPv4         netip.Prefix
-	RedirectIPv6         netip.Prefix
-	FakeIPIPv4           netip.Prefix
-	FakeIPIPv6           netip.Prefix
-	IncludeSourceCIDR    []netip.Prefix
-	ExcludeSourceCIDR    []netip.Prefix
-	IncludeSourceMAC     []MACAddress
-	ExcludeSourceMAC     []MACAddress
-	BypassPort           []PortRange
-	MapCapacity          SharedNetworkMapCapacities
-	UDPTimeout           time.Duration
+	ListenerPort uint16
+	EnableTCP    bool
+	EnableUDP    bool
+	RedirectIPv4 netip.Prefix
+	RedirectIPv6 netip.Prefix
+	Policy       CompiledPolicy
+	MapCapacity  SharedNetworkMapCapacities
+	UDPTimeout   time.Duration
 }
 
 type sharedNetworkMACKey struct {

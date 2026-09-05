@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "bpf_compat.h"
+#include "fakeip_policy.h"
 #include "private_address.h"
 
 #include <linux/bpf.h>
@@ -141,6 +142,20 @@ struct sb_tc_assign_value {
     __u8 path;
     __u8 source_mac_valid;
 };
+
+_Static_assert(sizeof(struct sb_tc_control) == 72, "sb_tc_control ABI size");
+_Static_assert(__builtin_offsetof(struct sb_tc_control, delivery_ifindex) == 8,
+    "sb_tc_control delivery_ifindex ABI offset");
+_Static_assert(__builtin_offsetof(struct sb_tc_control, routing_mark) == 12,
+    "sb_tc_control routing_mark ABI offset");
+_Static_assert(__builtin_offsetof(struct sb_tc_control, listener_port) == 16,
+    "sb_tc_control listener_port ABI offset");
+_Static_assert(__builtin_offsetof(struct sb_tc_control, fakeip_ipv6_mask) == 54,
+    "sb_tc_control fakeip_ipv6_mask ABI offset");
+_Static_assert(sizeof(struct sb_tc_assign_key) == 44, "sb_tc_assign_key ABI size");
+_Static_assert(sizeof(struct sb_tc_assign_value) == 24, "sb_tc_assign_value ABI size");
+_Static_assert(__builtin_offsetof(struct sb_tc_assign_value, socket_cookie) == 0,
+    "sb_tc_assign_value socket_cookie ABI offset");
 
 struct ethernet_header {
     __u8 destination[6];
@@ -320,16 +335,22 @@ INLINE bool private_destination(const struct sb_tc_assign_key *key) {
     return sb_ebpf_ipv6_private_address(key->destination_addr);
 }
 
-INLINE bool fakeip_destination(const struct sb_tc_control *control,
+INLINE bool must_intercept_fakeip(const struct sb_tc_control *control,
     const struct sb_tc_assign_key *key) {
     if (key->family == AF_INET_VALUE) {
-        return (control->flags & SB_TC_FLAG_FAKEIP_IPV4) != 0U &&
-            sb_ebpf_ipv4_prefix_match(key->destination_addr,
-                control->fakeip_ipv4_prefix, control->fakeip_ipv4_mask);
+        return sb_ebpf_must_intercept_fakeip_ipv4(
+            key->destination_addr,
+            control->flags,
+            SB_TC_FLAG_FAKEIP_IPV4,
+            control->fakeip_ipv4_prefix,
+            control->fakeip_ipv4_mask);
     }
-    return (control->flags & SB_TC_FLAG_FAKEIP_IPV6) != 0U &&
-        sb_ebpf_prefix_match(key->destination_addr,
-            control->fakeip_ipv6_prefix, control->fakeip_ipv6_mask);
+    return sb_ebpf_must_intercept_fakeip_ipv6(
+        key->destination_addr,
+        control->flags,
+        SB_TC_FLAG_FAKEIP_IPV6,
+        control->fakeip_ipv6_prefix,
+        control->fakeip_ipv6_mask);
 }
 
 INLINE bool bypass_destination(const struct sb_tc_control *control,
@@ -389,7 +410,7 @@ INLINE bool source_mac_selected(const struct sb_tc_control *control, const __u8 
 
 INLINE bool local_selected(struct __sk_buff *skb, const struct sb_tc_control *control,
     const struct sb_tc_assign_key *key, __u32 socket_metadata_value) {
-    if (fakeip_destination(control, key)) return true;
+    if (must_intercept_fakeip(control, key)) return true;
     if (dns_bypassed(key->protocol, key->destination_port, control->local_dns_mode)) return false;
     if (dns_selected(key->protocol, key->destination_port, control->local_dns_mode)) return true;
     if ((socket_metadata_value & SB_TC_SOCKET_METADATA_POLICY_BYPASS) != 0U) return false;
@@ -403,7 +424,7 @@ INLINE bool local_selected(struct __sk_buff *skb, const struct sb_tc_control *co
 
 INLINE bool shared_selected(const struct sb_tc_control *control,
     const struct sb_tc_assign_key *key, const __u8 source_mac[6]) {
-    if (fakeip_destination(control, key)) return true;
+    if (must_intercept_fakeip(control, key)) return true;
     if (dns_bypassed(key->protocol, key->destination_port, control->shared_dns_mode)) return false;
     if (dns_selected(key->protocol, key->destination_port, control->shared_dns_mode)) return true;
     if (!source_address_selected(control, key) || !source_mac_selected(control, source_mac)) return false;

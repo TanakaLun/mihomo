@@ -93,6 +93,12 @@ func prepareCgroupIntegrationBackend(path string, enableTCP, enableUDP, enableIP
 	if err != nil {
 		return nil, err
 	}
+	policy, err := CompilePolicy(PolicyConfig{EnableTCP: enableTCP, EnableUDP: enableUDP})
+	if err != nil {
+		_ = selfBypassMap.Close()
+		return nil, err
+	}
+	policy.local.EnableBypassCIDR = true
 	backend, err := PrepareCgroup(CgroupConfig{
 		Path:          path,
 		EnableTCP:     enableTCP,
@@ -102,6 +108,7 @@ func prepareCgroupIntegrationBackend(path string, enableTCP, enableUDP, enableIP
 		RedirectIPv6:  netip.MustParsePrefix("fd53:696e:672d:626f::/64"),
 		MapCapacity:   CgroupMapCapacity{TCPRedirect: 64, UDPRedirect: 64, UDPPeer: 64, UDPFlow: 64, SocketBypass: 8},
 		UDPTimeout:    time.Minute,
+		Policy:        policy,
 		SelfBypassMap: selfBypassMap,
 	})
 	_ = selfBypassMap.Close()
