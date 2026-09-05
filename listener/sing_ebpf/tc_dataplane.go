@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,17 +59,19 @@ type tcInterfaceAttachment struct {
 }
 
 type tcDeliveryLink struct {
-	redirectName string
-	deliveryName string
-	redirect     netlink.Link
-	delivery     netlink.Link
-	filter       *netlink.BpfFilter
-	sysctls      []tcSysctlState
+	redirectName  string
+	deliveryName  string
+	redirect      netlink.Link
+	delivery      netlink.Link
+	filter        *netlink.BpfFilter
+	sysctls       []tcSysctlState
+	globalSysctls []tcSysctlState
 }
 
 type tcSysctlState struct {
 	path     string
 	original string
+	applied  string
 }
 
 type tcDataPlane struct {
@@ -501,6 +504,7 @@ func (d *tcDataPlane) repairInfrastructure() (bool, error) {
 		)
 	}
 	previousDelivery := d.delivery
+	handoffTCGlobalSysctls(previousDelivery, delivery)
 	d.delivery = delivery
 	if err = previousDelivery.Close(); err != nil {
 		return true, E.Errors(routingErr, E.Cause(err, "remove stale TC eBPF delivery link"))
@@ -587,6 +591,14 @@ func (d *tcDeliveryLink) repair(backend *commonEBPF.TCBackend, priority uint16) 
 			d.sysctls = append(d.sysctls, state)
 			changed = true
 		}
+	}
+	aggregateStates, err := clearTCAggregateRPFilter(d.deliveryName)
+	if err != nil {
+		return changed, false, err
+	}
+	if len(aggregateStates) > 0 {
+		d.globalSysctls = append(d.globalSysctls, aggregateStates...)
+		changed = true
 	}
 	return changed, false, nil
 }
@@ -821,13 +833,11 @@ func updateTCInterfaceAttachment(
 	if role.shared && sharedSourceMACPolicy && attachment.framing != commonEBPF.TCLinkFramingEthernet {
 		return E.New("shared source MAC policy requires Ethernet framing on interface ", link.Attrs().Name)
 	}
+	if attachment.attachmentType == "tcx" {
+		return updateTCXInterfaceAttachment(link, backend, attachment, role)
+	}
 	if attachment.localLink != nil || attachment.sharedLink != nil {
-		if role == attachment.role {
-			return nil
-		}
-		if err = attachment.closeLinks(); err != nil {
-			return err
-		}
+		return E.New("TC eBPF interface has an inconsistent attachment type")
 	}
 	if err = ensureTCClsact(link); err != nil {
 		return E.Cause(err, "ensure TC clsact on interface ", attachment.interfaceName)
@@ -888,6 +898,125 @@ func updateTCInterfaceAttachment(
 		attachment.localFilter = nil
 	}
 	attachment.role = role
+	return nil
+}
+
+func updateTCXInterfaceAttachment(
+	linkDevice netlink.Link,
+	backend *commonEBPF.TCBackend,
+	attachment *tcInterfaceAttachment,
+	role tcInterfaceRole,
+) error {
+	if role == attachment.role {
+		return nil
+	}
+	attach := func(local bool) error {
+		program := backend.SharedIngressProgram(attachment.framing)
+		attachType := CiliumEBPF.AttachTCXIngress
+		if local {
+			program = backend.LocalEgressProgram(attachment.framing)
+			attachType = CiliumEBPF.AttachTCXEgress
+		}
+		if program == nil {
+			if local {
+				return E.New("TC eBPF local program is unavailable")
+			}
+			return E.New("TC eBPF shared program is unavailable")
+		}
+		attached, err := link.AttachTCX(link.TCXOptions{
+			Interface: linkDevice.Attrs().Index,
+			Program:   program,
+			Attach:    attachType,
+		})
+		if err != nil {
+			return err
+		}
+		if local {
+			attachment.localLink = attached
+		} else {
+			attachment.sharedLink = attached
+		}
+		return nil
+	}
+	detach := func(local bool) error {
+		attached := attachment.sharedLink
+		if local {
+			attached = attachment.localLink
+		}
+		if attached == nil {
+			return nil
+		}
+		if err := attached.Close(); err != nil {
+			return err
+		}
+		if local {
+			attachment.localLink = nil
+		} else {
+			attachment.sharedLink = nil
+		}
+		return nil
+	}
+	if err := transitionTCXInterfaceRole(
+		attachment.role,
+		role,
+		attachment.localLink != nil,
+		attachment.sharedLink != nil,
+		attach,
+		detach,
+	); err != nil {
+		return E.Cause(err, "update TCX eBPF interface ", attachment.interfaceName)
+	}
+	attachment.role = role
+	return nil
+}
+
+// transitionTCXInterfaceRole installs desired links before removing obsolete
+// links. This keeps at least one interception direction active throughout a
+// role change and rolls back links created by a failed update.
+func transitionTCXInterfaceRole(
+	current tcInterfaceRole,
+	desired tcInterfaceRole,
+	hasLocal bool,
+	hasShared bool,
+	attach func(local bool) error,
+	detach func(local bool) error,
+) error {
+	if current == desired {
+		return nil
+	}
+	created := make([]bool, 0, 2)
+	rollback := func(startErr error) error {
+		var rollbackErr error
+		for index := len(created) - 1; index >= 0; index-- {
+			rollbackErr = E.Errors(rollbackErr, detach(created[index]))
+		}
+		return E.Errors(startErr, rollbackErr)
+	}
+	if desired.local && !hasLocal {
+		if err := attach(true); err != nil {
+			return E.Cause(err, "attach TCX local egress")
+		}
+		hasLocal = true
+		created = append(created, true)
+	}
+	if desired.shared && !hasShared {
+		if err := attach(false); err != nil {
+			return rollback(E.Cause(err, "attach TCX shared ingress"))
+		}
+		hasShared = true
+		created = append(created, false)
+	}
+	if !desired.shared && hasShared {
+		if err := detach(false); err != nil {
+			return rollback(E.Cause(err, "detach TCX shared ingress"))
+		}
+		hasShared = false
+	}
+	if !desired.local && hasLocal {
+		if err := detach(true); err != nil {
+			return rollback(E.Cause(err, "detach TCX local egress"))
+		}
+	}
 	return nil
 }
 
@@ -999,6 +1128,11 @@ func createTCDeliveryLink(backend *commonEBPF.TCBackend, priority uint16) (*tcDe
 			delivery.sysctls = append(delivery.sysctls, state)
 		}
 	}
+	aggregateStates, err := clearTCAggregateRPFilter(deliveryName)
+	if err != nil {
+		return cleanup(err)
+	}
+	delivery.globalSysctls = append(delivery.globalSysctls, aggregateStates...)
 	if err = ensureTCClsact(delivery.delivery); err != nil {
 		return cleanup(err)
 	}
@@ -1050,19 +1184,137 @@ func nextTCVethNames() (string, string, error) {
 }
 
 func setTCInterfaceSysctl(interfaceName, setting, value string) (tcSysctlState, bool, error) {
-	path := "/proc/sys/net/ipv4/conf/" + interfaceName + "/" + setting
+	state, changed, err := setTCSysctl(tcInterfaceSysctlPath(interfaceName, setting), value)
+	if err != nil {
+		return state, changed, E.Cause(err, setting, " for ", interfaceName)
+	}
+	return state, changed, nil
+}
+
+func tcInterfaceSysctlPath(interfaceName, setting string) string {
+	return "/proc/sys/net/ipv4/conf/" + interfaceName + "/" + setting
+}
+
+func setTCSysctl(path, value string) (tcSysctlState, bool, error) {
 	current, err := os.ReadFile(path)
 	if err != nil {
-		return tcSysctlState{}, false, E.Cause(err, "read ", setting, " for ", interfaceName)
+		return tcSysctlState{}, false, err
 	}
 	original := strings.TrimSpace(string(current))
 	if original == value {
 		return tcSysctlState{}, false, nil
 	}
 	if err = os.WriteFile(path, []byte(value), 0o644); err != nil {
-		return tcSysctlState{}, false, E.Cause(err, "set ", setting, " for ", interfaceName)
+		return tcSysctlState{}, false, err
 	}
-	return tcSysctlState{path: path, original: original}, true, nil
+	return tcSysctlState{path: path, original: original, applied: value}, true, nil
+}
+
+func restoreTCSysctlStates(states []tcSysctlState) error {
+	var restoreErr error
+	for _, state := range slices.Backward(states) {
+		current, err := os.ReadFile(state.path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			restoreErr = E.Errors(restoreErr, err)
+			continue
+		}
+		if strings.TrimSpace(string(current)) != state.applied {
+			continue
+		}
+		if err = os.WriteFile(state.path, []byte(state.original), 0o644); err != nil &&
+			!errors.Is(err, os.ErrNotExist) {
+			restoreErr = E.Errors(restoreErr, err)
+		}
+	}
+	return restoreErr
+}
+
+// clearTCAggregateRPFilter makes the delivery interface's own rp_filter=0 take
+// effect.
+//
+// The kernel evaluates the reverse path filter as max(conf.all.rp_filter,
+// conf.<device>.rp_filter) (IN_DEV_MAXCONF), so clearing it on the delivery
+// interface alone is a no-op while the aggregate knob is set. Redirected packets
+// keep the source address of the interface they were about to leave on, which
+// never routes back through the delivery interface, so __fib_validate_source()
+// drops them as martian source for any non-zero value — loose mode included,
+// because an interface without an address takes the last_resort branch, which
+// rejects whenever the filter is enabled at all.
+//
+// Lower the aggregate knob, but first pin every other interface to the previous
+// aggregate value so their effective policy is unchanged.
+func clearTCAggregateRPFilter(deliveryName string) ([]tcSysctlState, error) {
+	aggregatePath := tcInterfaceSysctlPath("all", "rp_filter")
+	current, err := os.ReadFile(aggregatePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, E.Cause(err, "read aggregate rp_filter")
+	}
+	aggregate, err := strconv.Atoi(strings.TrimSpace(string(current)))
+	if err != nil || aggregate == 0 {
+		return nil, nil
+	}
+	entries, err := os.ReadDir("/proc/sys/net/ipv4/conf")
+	if err != nil {
+		return nil, E.Cause(err, "list rp_filter interfaces")
+	}
+	states := make([]tcSysctlState, 0, len(entries)+1)
+	failed := func(cause error) ([]tcSysctlState, error) {
+		return nil, E.Errors(cause, restoreTCSysctlStates(states))
+	}
+	for _, entry := range entries {
+		if entry.Name() == "all" || entry.Name() == deliveryName {
+			continue
+		}
+		state, changed, pinErr := pinTCInterfaceRPFilter(entry.Name(), aggregate)
+		if pinErr != nil {
+			if errors.Is(pinErr, os.ErrNotExist) {
+				continue
+			}
+			return failed(E.Cause(pinErr, "pin rp_filter for ", entry.Name()))
+		}
+		if changed {
+			states = append(states, state)
+		}
+	}
+	state, changed, err := setTCSysctl(aggregatePath, "0")
+	if err != nil {
+		return failed(E.Cause(err, "clear aggregate rp_filter"))
+	}
+	if changed {
+		states = append(states, state)
+	}
+	return states, nil
+}
+
+// pinTCInterfaceRPFilter raises one interface to the aggregate value so that
+// clearing the aggregate knob leaves its effective filter untouched.
+func pinTCInterfaceRPFilter(interfaceName string, aggregate int) (tcSysctlState, bool, error) {
+	path := tcInterfaceSysctlPath(interfaceName, "rp_filter")
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return tcSysctlState{}, false, err
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(string(current)))
+	if err != nil || value >= aggregate {
+		return tcSysctlState{}, false, nil
+	}
+	return setTCSysctl(path, strconv.Itoa(aggregate))
+}
+
+func handoffTCGlobalSysctls(previous, next *tcDeliveryLink) {
+	if previous == nil || next == nil {
+		return
+	}
+	if len(next.globalSysctls) == 0 {
+		next.globalSysctls = previous.globalSysctls
+	}
+	previous.globalSysctls = nil
 }
 
 func (d *tcDeliveryLink) Close() error {
@@ -1074,12 +1326,10 @@ func (d *tcDeliveryLink) Close() error {
 		closeErr = detachTCFilter(d.filter)
 		d.filter = nil
 	}
-	for _, state := range slices.Backward(d.sysctls) {
-		if err := os.WriteFile(state.path, []byte(state.original), 0o644); err != nil && !errors.Is(err, os.ErrNotExist) {
-			closeErr = E.Errors(closeErr, err)
-		}
-	}
+	closeErr = E.Errors(closeErr, restoreTCSysctlStates(d.sysctls))
 	d.sysctls = nil
+	closeErr = E.Errors(closeErr, restoreTCSysctlStates(d.globalSysctls))
+	d.globalSysctls = nil
 	if d.redirect != nil {
 		if err := netlink.LinkDel(d.redirect); err != nil &&
 			!errors.Is(err, unix.ENODEV) && !errors.Is(err, unix.ENOENT) {

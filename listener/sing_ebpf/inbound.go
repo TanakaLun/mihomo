@@ -53,6 +53,7 @@ type Inbound struct {
 	sharedBypassPrivate bool
 	tcPriority          uint16
 	localPolicy         ECommon.LocalPolicy
+	compiledPolicy      ECommon.CompiledPolicy
 	sharedOptions       LC.EBPFShared
 	sharedIncludeMAC    []ECommon.MACAddress
 	sharedExcludeMAC    []ECommon.MACAddress
@@ -278,11 +279,41 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 		udpTimeout = time.Duration(options.UDPTimeout)
 	}
 	inbound.udpTimeout = udpTimeout
+	if err := inbound.compilePolicy(); err != nil {
+		return nil, err
+	}
 	if err := inbound.start(); err != nil {
 		_ = inbound.Close()
 		return nil, err
 	}
 	return inbound, nil
+}
+
+// compilePolicy builds the immutable compiled policy snapshot shared by every
+// eBPF data plane created for this inbound.
+func (i *Inbound) compilePolicy() error {
+	localPolicy := i.localPolicy
+	localPolicy.EnableBypassCIDR = true
+	policy, err := ECommon.CompilePolicy(ECommon.PolicyConfig{
+		EnableTCP:           i.enableTCP,
+		EnableUDP:           i.enableUDP,
+		Local:               localPolicy,
+		SharedDNSMode:       toCommonDNSMode(i.sharedDNSMode),
+		SharedBypassPrivate: i.sharedBypassPrivate,
+		FakeIPIPv4:          i.fakeIPIPv4Prefix,
+		FakeIPIPv6:          i.fakeIPIPv6Prefix,
+		IncludeSourceCIDR:   i.sharedOptions.IncludeSourceCIDR,
+		ExcludeSourceCIDR:   i.sharedOptions.ExcludeSourceCIDR,
+		IncludeSourceMAC:    i.sharedIncludeMAC,
+		ExcludeSourceMAC:    i.sharedExcludeMAC,
+		LocalBypassPort:     i.localBypassPort,
+		SharedBypassPort:    i.sharedBypassPort,
+	})
+	if err != nil {
+		return E.Cause(err, "compile eBPF policy")
+	}
+	i.compiledPolicy = policy
+	return nil
 }
 
 func (i *Inbound) resolveProcessPolicy() error {
@@ -370,26 +401,16 @@ func (i *Inbound) start() error {
 	var dataPlane *tcDataPlane
 	if localTCEnabled || sharedSocketAssignEnabled {
 		backendConfig := ECommon.TCConfig{
-			ListenerPort:        i.listeners.selectedPort(),
-			EnableLocal:         localTCEnabled,
-			EnableShared:        sharedSocketAssignEnabled,
-			EnableIPv4:          true,
-			EnableLocalIPv6:     i.localIPv6,
-			EnableSharedIPv6:    i.sharedIPv6,
-			EnableTCP:           i.enableTCP,
-			EnableUDP:           i.enableUDP,
-			LocalPolicy:         i.localPolicy,
-			SharedDNSMode:       toCommonDNSMode(i.sharedDNSMode),
-			SharedBypassPrivate: i.sharedBypassPrivate,
-			FakeIPIPv4:          i.fakeIPIPv4Prefix,
-			FakeIPIPv6:          i.fakeIPIPv6Prefix,
-			IncludeSourceCIDR:   i.sharedOptions.IncludeSourceCIDR,
-			ExcludeSourceCIDR:   i.sharedOptions.ExcludeSourceCIDR,
-			IncludeSourceMAC:    i.sharedIncludeMAC,
-			ExcludeSourceMAC:    i.sharedExcludeMAC,
-			LocalBypassPort:     i.localBypassPort,
-			SharedBypassPort:    i.sharedBypassPort,
-			TrackProcess:        i.processTracker != nil,
+			ListenerPort:     i.listeners.selectedPort(),
+			EnableLocal:      localTCEnabled,
+			EnableShared:     sharedSocketAssignEnabled,
+			EnableIPv4:       true,
+			EnableLocalIPv6:  i.localIPv6,
+			EnableSharedIPv6: i.sharedIPv6,
+			EnableTCP:        i.enableTCP,
+			EnableUDP:        i.enableUDP,
+			Policy:           i.compiledPolicy,
+			TrackProcess:     i.processTracker != nil,
 		}
 		if i.selfBypass != nil {
 			backendConfig.SelfBypassMap = i.selfBypass.Map()
@@ -609,24 +630,17 @@ func (i *Inbound) takeCgroupBackend() *ECommon.CgroupBackend {
 }
 
 func (i *Inbound) prepareCgroupBackend() error {
-	policy := i.localPolicy
-	policy.EnableBypassCIDR = true
 	backendConfig := ECommon.CgroupConfig{
-		Path:         i.cgroupPath,
-		EnableTCP:    i.enableTCP,
-		EnableUDP:    i.enableUDP,
-		EnableIPv6:   i.cgroupIPv6Enabled(),
-		RedirectIPv4: i.redirectIPv4Prefix,
-		RedirectIPv6: i.redirectIPv6Prefix,
-		FakeIPIPv4:   i.fakeIPIPv4Prefix,
-		FakeIPIPv6:   i.fakeIPIPv6Prefix,
-		MapCapacity:  ECommon.DefaultCgroupMapCapacity(),
-		UDPTimeout:   i.udpTimeout,
-		Policy:       policy,
-		BypassPort:   i.localBypassPort,
-	}
-	if i.selfBypass != nil {
-		backendConfig.SelfBypassMap = i.selfBypass.Map()
+		Path:          i.cgroupPath,
+		EnableTCP:     i.enableTCP,
+		EnableUDP:     i.enableUDP,
+		EnableIPv6:    i.cgroupIPv6Enabled(),
+		RedirectIPv4:  i.redirectIPv4Prefix,
+		RedirectIPv6:  i.redirectIPv6Prefix,
+		MapCapacity:   ECommon.DefaultCgroupMapCapacity(),
+		UDPTimeout:    i.udpTimeout,
+		Policy:        i.compiledPolicy,
+		SelfBypassMap: i.selfBypass.Map(),
 	}
 	backend, err := ECommon.PrepareCgroup(backendConfig)
 	if err != nil {

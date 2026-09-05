@@ -100,22 +100,14 @@ func (s *sharedRewrite) prepareBackend() (*ECommon.SharedNetworkBackend, error) 
 	}
 	cgroupBackend := s.inbound.cgroupBackendInstance()
 	backend, err := ECommon.PrepareSharedNetwork(cgroupBackend, ECommon.SharedNetworkConfig{
-		ListenerPort:         s.listeners.selectedPort(),
-		EnableTCP:            s.inbound.enableTCP,
-		EnableUDP:            s.inbound.enableUDP,
-		DNSMode:              toCommonDNSMode(s.inbound.sharedDNSMode),
-		BypassPrivateAddress: s.inbound.sharedBypassPrivate,
-		RedirectIPv4:         s.inbound.redirectIPv4Prefix,
-		RedirectIPv6:         redirectIPv6,
-		FakeIPIPv4:           s.inbound.fakeIPIPv4Prefix,
-		FakeIPIPv6:           s.inbound.fakeIPIPv6Prefix,
-		IncludeSourceCIDR:    s.inbound.sharedOptions.IncludeSourceCIDR,
-		ExcludeSourceCIDR:    s.inbound.sharedOptions.ExcludeSourceCIDR,
-		IncludeSourceMAC:     s.inbound.sharedIncludeMAC,
-		ExcludeSourceMAC:     s.inbound.sharedExcludeMAC,
-		BypassPort:           s.inbound.sharedBypassPort,
-		MapCapacity:          s.mapCapacity,
-		UDPTimeout:           s.inbound.udpTimeout,
+		ListenerPort: s.listeners.selectedPort(),
+		EnableTCP:    s.inbound.enableTCP,
+		EnableUDP:    s.inbound.enableUDP,
+		RedirectIPv4: s.inbound.redirectIPv4Prefix,
+		RedirectIPv6: redirectIPv6,
+		Policy:       s.inbound.compiledPolicy,
+		MapCapacity:  s.mapCapacity,
+		UDPTimeout:   s.inbound.udpTimeout,
 	})
 	if err != nil {
 		return nil, err
