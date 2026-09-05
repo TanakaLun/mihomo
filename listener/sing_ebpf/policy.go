@@ -90,17 +90,33 @@ func (i *Inbound) refreshBypassCIDRsLocked() error {
 	if err != nil {
 		return err
 	}
+	i.bypassRuleSetPolicy = policy
 	i.bypassCIDR = policy.Prefixes()
-	backend := i.tcBackend()
-	if backend == nil {
-		return nil
+	if backend := i.tcBackend(); backend != nil {
+		if _, err = backend.UpdateCompiledBypassCIDR(policy); err != nil {
+			return err
+		}
 	}
-	if _, err = backend.UpdateCompiledBypassCIDR(policy); err != nil {
-		return err
+	if backend := i.cgroupBackendInstance(); backend != nil {
+		if _, err = backend.UpdateCompiledBypassCIDR(policy); err != nil {
+			return err
+		}
+	}
+	if i.sharedRewrite != nil {
+		if backend := i.sharedRewrite.sharedBackendInstance(); backend != nil {
+			if cgroupBackend := i.cgroupBackendInstance(); cgroupBackend != nil {
+				ipv4Count, ipv6Count := cgroupBackend.BypassCIDRCount()
+				if err = backend.SetBypassCIDRState(ipv4Count, ipv6Count); err != nil {
+					return err
+				}
+			} else if _, err = backend.UpdateCompiledBypassCIDR(policy); err != nil {
+				return err
+			}
+		}
 	}
 	// Publish the effective bypass CIDR set to the DNS fake-ip middleware so
 	// domains whose real addresses fall inside it keep their real IP and the
-	// kernel TC eBPF bypass can engage.
+	// kernel eBPF bypass can engage.
 	if len(i.bypassRuleSet) > 0 {
 		var builder netipx.IPSetBuilder
 		for _, prefix := range i.bypassCIDR {
