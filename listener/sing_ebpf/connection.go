@@ -296,10 +296,11 @@ func (i *Inbound) writeUDPReply(client netip.AddrPort, clientState *udpClientSta
 	if clientState.isCgroupDataPlane() {
 		return i.listeners.writeUDP(payload, binding.packetInfo, client, binding.redirectAddress)
 	}
-	socket, err := i.udpReplySockets.get(destinationAddress, i.newTCUDPReplySocket)
+	socket, release, err := i.udpReplySockets.get(destinationAddress, i.newTCUDPReplySocket)
 	if err != nil {
 		return err
 	}
+	defer release()
 	_, err = socket.WriteToUDPAddrPort(payload, client)
 	return err
 }
