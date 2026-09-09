@@ -99,7 +99,9 @@ INLINE const struct sb_ebpf_cgroup_control *control(void) {
 INLINE bool is_cookie_bypassed(void *ctx) {
     __u64 cookie = get_socket_cookie(ctx);
     if (cookie == 0U) return false;
-    return map_lookup(&cgroup_socket_bypass, &cookie) != 0;
+    __u32 *metadata = map_lookup(&cgroup_socket_bypass, &cookie);
+    return metadata != 0 &&
+        (*metadata & SB_EBPF_SOCKET_METADATA_SELF_BYPASS) != 0U;
 }
 
 INLINE bool uid_bypassed(const struct sb_ebpf_cgroup_control *config) {
@@ -286,15 +288,14 @@ INLINE bool token_v4(
         __u32 network_candidate = swap32(candidate);
         __builtin_memset(key->token_addr, 0, sizeof(key->token_addr));
         __builtin_memcpy(key->token_addr, &network_candidate, sizeof(network_candidate));
-        struct sb_ebpf_original_dst *existing = protocol == TCP_VALUE
-            ? map_lookup(&cgroup_tcp_redirect, key)
-            : map_lookup(&cgroup_udp_redirect, key);
-        if (existing != 0 && equal_original(existing, value)) return true;
-        if (existing == 0) {
-            long update_result = protocol == TCP_VALUE
-                ? map_update(&cgroup_tcp_redirect, key, value, BPF_NOEXIST)
-                : map_update(&cgroup_udp_redirect, key, value, BPF_NOEXIST);
-            if (update_result == 0) return true;
+        if (protocol == TCP_VALUE) {
+            struct sb_ebpf_original_dst *existing = map_lookup(&cgroup_tcp_redirect, key);
+            if (existing != 0 && equal_original(existing, value)) return true;
+            if (existing == 0 && map_update(&cgroup_tcp_redirect, key, value, BPF_NOEXIST) == 0) return true;
+        } else {
+            struct sb_ebpf_original_dst *existing = map_lookup(&cgroup_udp_redirect, key);
+            if (existing != 0 && equal_original(existing, value)) return true;
+            if (existing == 0 && map_update(&cgroup_udp_redirect, key, value, BPF_NOEXIST) == 0) return true;
         }
         seed += 0x9e3779b9U;
     }
@@ -319,15 +320,14 @@ INLINE bool token_v6(
         __builtin_memcpy(key->token_addr, config->redirect_ipv6_prefix, 8U);
         __builtin_memcpy(key->token_addr + 8U, &seed0, 4U);
         __builtin_memcpy(key->token_addr + 12U, &seed1, 4U);
-        struct sb_ebpf_original_dst *existing = protocol == TCP_VALUE
-            ? map_lookup(&cgroup_tcp_redirect, key)
-            : map_lookup(&cgroup_udp_redirect, key);
-        if (existing != 0 && equal_original(existing, value)) return true;
-        if (existing == 0) {
-            long update_result = protocol == TCP_VALUE
-                ? map_update(&cgroup_tcp_redirect, key, value, BPF_NOEXIST)
-                : map_update(&cgroup_udp_redirect, key, value, BPF_NOEXIST);
-            if (update_result == 0) return true;
+        if (protocol == TCP_VALUE) {
+            struct sb_ebpf_original_dst *existing = map_lookup(&cgroup_tcp_redirect, key);
+            if (existing != 0 && equal_original(existing, value)) return true;
+            if (existing == 0 && map_update(&cgroup_tcp_redirect, key, value, BPF_NOEXIST) == 0) return true;
+        } else {
+            struct sb_ebpf_original_dst *existing = map_lookup(&cgroup_udp_redirect, key);
+            if (existing != 0 && equal_original(existing, value)) return true;
+            if (existing == 0 && map_update(&cgroup_udp_redirect, key, value, BPF_NOEXIST) == 0) return true;
         }
         seed0 += 0x9e3779b9U;
         seed1 += 0x7f4a7c15U;

@@ -39,20 +39,28 @@ type BypassCIDRPolicy struct {
 	ipv6 []netip.Prefix
 }
 
-func (p BypassCIDRPolicy) Count() (int, int) {
+func CompileBypassCIDRPolicy(prefixes []netip.Prefix) (BypassCIDRPolicy, error) {
+	ipv4, ipv6, err := compileBypassCIDRPolicy(prefixes)
+	return BypassCIDRPolicy{ipv4: ipv4, ipv6: ipv6}, err
+}
+
+// Counts reports how many IPv4 and IPv6 prefixes this policy compiled to,
+// for callers (such as a shared-network backend that mirrors a cgroup
+// backend's map rather than holding its own copy of the prefixes) that only
+// need to know how many entries a previously-applied policy had, not the
+// prefixes themselves.
+func (p BypassCIDRPolicy) Counts() (int, int) {
 	return len(p.ipv4), len(p.ipv6)
 }
 
+// Prefixes returns the IPv4 and IPv6 prefixes of the policy. It is used by the
+// mihomo adapter to publish the effective bypass set to the DNS fake-ip
+// middleware.
 func (p BypassCIDRPolicy) Prefixes() []netip.Prefix {
 	prefixes := make([]netip.Prefix, 0, len(p.ipv4)+len(p.ipv6))
 	prefixes = append(prefixes, p.ipv4...)
 	prefixes = append(prefixes, p.ipv6...)
 	return prefixes
-}
-
-func CompileBypassCIDRPolicy(prefixes []netip.Prefix) (BypassCIDRPolicy, error) {
-	ipv4, ipv6, err := compileBypassCIDRPolicy(prefixes)
-	return BypassCIDRPolicy{ipv4: ipv4, ipv6: ipv6}, err
 }
 
 func compileUIDPolicy(policy LocalPolicy) ([]uidLPMKey, bool, error) {
