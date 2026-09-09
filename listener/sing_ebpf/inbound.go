@@ -30,7 +30,7 @@ import (
 type Listener interface {
 	Close() error
 	Address() string
-	InterfaceUpdated()
+	InterfaceUpdated(ctx context.Context)
 }
 
 type Inbound struct {
@@ -86,13 +86,24 @@ type Inbound struct {
 
 	sharedRewrite *sharedRewrite
 
-	bypassRuleSetAccess   sync.Mutex
-	bypassRuleSet         []P.RuleProvider
-	bypassRuleSetCallback io.Closer
-	bypassRuleSetStarted  bool
-	bypassCIDR            []netip.Prefix
-	bypassRuleSetPolicy   ECommon.BypassCIDRPolicy
-	bypassRuleSetDirty    bool
+	bypassRuleSetAccess          sync.Mutex
+	bypassRuleSet                []P.RuleProvider
+	bypassRuleSetCallback        io.Closer
+	bypassRuleSetStarted         bool
+	bypassCIDR                   []netip.Prefix
+	bypassRuleSetPolicy          ECommon.BypassCIDRPolicy
+	bypassRuleSetDirty           bool
+	bypassRuleSetNeedsRetry      bool
+	bypassRuleSetInconsistent    bool
+	bypassRuleSetRetryCount      uint64
+	bypassRuleSetPolicyVersion   uint64
+	bypassRuleSetExpectedVersion uint64
+	bypassRuleSetTC              bypassCIDRBackendVersion
+	bypassRuleSetCgroup          bypassCIDRBackendVersion
+
+	diagnostics     tcOutcomeHistory
+	counters        ebpfCounters
+	fakeIPICMPReply bool
 
 	protectRegistered bool
 
@@ -251,8 +262,21 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 	if inbound.tcPriority == 0 {
 		inbound.tcPriority = defaultTCPriority
 	}
+	fakeIPICMPReply, err := normalizeFakeIPICMP(options.FakeIPICMP)
+	if err != nil {
+		return nil, E.Cause(err, "parse fakeip_icmp")
+	}
+	inbound.fakeIPICMPReply = fakeIPICMPReply
 	inbound.fakeIPIPv4Prefix, inbound.fakeIPIPv6Prefix = resolver.EBFPFakeIPRanges.Get()
 	if err = inbound.normalizeFakeIPPrefixes(); err != nil {
+		return nil, err
+	}
+	if err = validateFakeIPICMP(
+		inbound.fakeIPICMPReply,
+		inbound.fakeIPIPv4Prefix, inbound.fakeIPIPv6Prefix,
+		inbound.localEnabled, inbound.localDataPlane,
+		inbound.sharedEnabled, inbound.sharedDataPlane,
+	); err != nil {
 		return nil, err
 	}
 	if inbound.localCgroupEnabled() || inbound.sharedRewriteEnabled() {
@@ -401,16 +425,17 @@ func (i *Inbound) start() error {
 	var dataPlane *tcDataPlane
 	if localTCEnabled || sharedSocketAssignEnabled {
 		backendConfig := ECommon.TCConfig{
-			ListenerPort:     i.listeners.selectedPort(),
-			EnableLocal:      localTCEnabled,
-			EnableShared:     sharedSocketAssignEnabled,
-			EnableIPv4:       true,
-			EnableLocalIPv6:  i.localIPv6,
-			EnableSharedIPv6: i.sharedIPv6,
-			EnableTCP:        i.enableTCP,
-			EnableUDP:        i.enableUDP,
-			Policy:           i.compiledPolicy,
-			TrackProcess:     i.processTracker != nil,
+			ListenerPort:      i.listeners.selectedPort(),
+			EnableLocal:       localTCEnabled,
+			EnableShared:      sharedSocketAssignEnabled,
+			EnableIPv4:        true,
+			EnableLocalIPv6:   i.localIPv6,
+			EnableSharedIPv6:  i.sharedIPv6,
+			EnableTCP:         i.enableTCP,
+			EnableUDP:         i.enableUDP,
+			Policy:            i.compiledPolicy,
+			TrackProcess:      i.processTracker != nil,
+			FakeIPICMPReply:   i.fakeIPICMPReply,
 		}
 		if i.selfBypass != nil {
 			backendConfig.SelfBypassMap = i.selfBypass.Map()
@@ -706,4 +731,21 @@ func (i *Inbound) Address() string {
 		return "eBPF(TC, listen_port=" + fmt.Sprint(i.listeners.selectedPort()) + ")"
 	}
 	return "eBPF"
+}
+
+func (i *Inbound) sharedRewriteInstance() *sharedRewrite {
+	return i.sharedRewrite
+}
+
+func (s *sharedRewrite) dataPlaneInstance() *sharedRewriteDataPlane {
+	if s == nil {
+		return nil
+	}
+	s.lifecycleAccess.RLock()
+	defer s.lifecycleAccess.RUnlock()
+	return s.dataPlane
+}
+
+func (i *Inbound) warnIfLocalFakeIPICMPIPv6Unroutable(string) {
+	// mihomo does not surface the fakeip_icmp IPv6 route diagnostic.
 }

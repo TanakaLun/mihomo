@@ -11,6 +11,7 @@ type EBPF struct {
 	UDPTimeout    int64      `json:"udp-timeout" yaml:"udp-timeout"`
 	TCPriority    uint16     `json:"tc-priority" yaml:"tc-priority" inbound:"tc-priority,omitempty"`
 	BypassRuleSet []string   `json:"bypass-rule-set" yaml:"bypass-rule-set"`
+	FakeIPICMP    string     `json:"fakeip-icmp" yaml:"fakeip-icmp" inbound:"fakeip-icmp,omitempty"`
 	Local         EBPFLocal  `json:"local" yaml:"local" inbound:"local,omitempty"`
 	Shared        EBPFShared `json:"shared" yaml:"shared" inbound:"shared,omitempty"`
 }

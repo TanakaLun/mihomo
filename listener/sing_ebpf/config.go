@@ -3,6 +3,7 @@
 package sing_ebpf
 
 import (
+	"net/netip"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -31,6 +32,22 @@ const (
 	sharedDataPlanePacketRewrite = "packet_rewrite"
 )
 
+const (
+	fakeIPICMPOff   = "off"
+	fakeIPICMPReply = "reply"
+)
+
+func normalizeFakeIPICMP(mode string) (bool, error) {
+	switch mode {
+	case "", fakeIPICMPOff:
+		return false, nil
+	case fakeIPICMPReply:
+		return true, nil
+	default:
+		return false, E.New("unknown fakeip_icmp: ", mode)
+	}
+}
+
 func normalizeMode(mode string) (string, bool, bool, error) {
 	switch mode {
 	case "", ebpfModeLocal:
@@ -42,6 +59,32 @@ func normalizeMode(mode string) (string, bool, bool, error) {
 	default:
 		return "", false, false, E.New("unknown eBPF mode: ", mode)
 	}
+}
+
+func validateFakeIPICMP(
+	enabled bool,
+	fakeIPIPv4, fakeIPIPv6 netip.Prefix,
+	localEnabled bool, localDataPlane string,
+	sharedEnabled bool, sharedDataPlane string,
+) error {
+	if !enabled {
+		return nil
+	}
+	if !fakeIPIPv4.IsValid() && !fakeIPIPv6.IsValid() {
+		return E.New("fakeip_icmp=reply requires a FakeIP range to be configured (dns fakeip transport)")
+	}
+	hasLocalTC := localEnabled && localDataPlane == localDataPlaneTC
+	hasSharedAttachment := sharedEnabled && (sharedDataPlane == sharedDataPlaneSocketAssign || sharedDataPlane == sharedDataPlanePacketRewrite)
+	if hasLocalTC || hasSharedAttachment {
+		return nil
+	}
+	if localEnabled && localDataPlane == localDataPlaneCgroup && !sharedEnabled {
+		return E.New(
+			"fakeip_icmp=reply is not supported with local.data_plane=cgroup and no shared interception enabled: ",
+			"cgroup's connect()/sendmsg() hooks cannot see or answer ICMP; switch to local.data_plane=tc, or enable shared interception",
+		)
+	}
+	return E.New("fakeip_icmp=reply requires local.data_plane=tc or shared interception (either shared.data_plane) to be enabled")
 }
 
 func normalizeDNSMode(mode string) (string, error) {

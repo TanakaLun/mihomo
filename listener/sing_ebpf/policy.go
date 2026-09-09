@@ -63,10 +63,12 @@ func (i *Inbound) updateBypassRuleSet(P.RuleProvider) {
 		return
 	}
 	if err := i.refreshBypassCIDRsLocked(); err != nil {
-		if backend := i.tcBackend(); backend != nil {
-			log.Errorln("[EBPF] refresh TC eBPF bypass_rule_set; keeping previous policy: %s", err.Error())
-		}
+		log.Errorln("[EBPF] refresh TC eBPF bypass_rule_set; keeping previous policy: %s", err.Error())
+		i.bypassRuleSetNeedsRetry = true
+		i.notifyTCInterfaceUpdate()
+		return
 	}
+	i.bypassRuleSetNeedsRetry = false
 }
 
 func (i *Inbound) refreshBypassCIDRsLocked() error {
@@ -129,4 +131,26 @@ func (i *Inbound) refreshBypassCIDRsLocked() error {
 		resolver.EBFPBypassIPSet.Store(nil)
 	}
 	return nil
+}
+
+type bypassCIDRBackendVersion struct {
+	version uint64
+	known   bool
+}
+
+// retryBypassRuleSetIfNeededLocked retries a previously failed bypass
+// rule-set refresh on the scheduler's next round.
+func (i *Inbound) retryBypassRuleSetIfNeededLocked() tcSharedRewriteOutcome {
+	i.bypassRuleSetAccess.Lock()
+	defer i.bypassRuleSetAccess.Unlock()
+	if !i.bypassRuleSetStarted || !i.bypassRuleSetNeedsRetry {
+		return tcSharedRewriteSettled
+	}
+	i.bypassRuleSetRetryCount++
+	if err := i.refreshBypassCIDRsLocked(); err != nil {
+		log.Errorln("[EBPF] retry TC eBPF bypass_rule_set refresh: %s", err.Error())
+		return tcSharedRewriteRecoverable
+	}
+	i.bypassRuleSetNeedsRetry = false
+	return tcSharedRewriteSettled
 }
