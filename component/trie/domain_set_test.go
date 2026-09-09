@@ -1,6 +1,7 @@
 package trie_test
 
 import (
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,6 +30,7 @@ func testDump(t *testing.T, tree *trie.DomainTrie[struct{}], set *trie.DomainSet
 
 func TestDomainSet(t *testing.T) {
 	tree := trie.New[struct{}]()
+	var builder trie.DomainSetBuilder
 	domainSet := []string{
 		"baidu.com",
 		"google.com",
@@ -42,9 +44,11 @@ func TestDomainSet(t *testing.T) {
 
 	for _, domain := range domainSet {
 		assert.NoError(t, tree.Insert(domain, struct{}{}))
+		assert.NoError(t, builder.Insert(domain))
 	}
-	assert.False(t, tree.IsEmpty())
-	set := tree.NewDomainSet()
+	assert.False(t, builder.IsEmpty())
+	set := builder.Build()
+	assert.Equal(t, tree.NewDomainSet(), set)
 	assert.NotNil(t, set)
 	assert.True(t, set.Has("test.cn"))
 	assert.True(t, set.Has("cn"))
@@ -57,8 +61,43 @@ func TestDomainSet(t *testing.T) {
 	testDump(t, tree, set)
 }
 
+func TestDomainSetBuilderLifecycle(t *testing.T) {
+	var builder trie.DomainSetBuilder
+	assert.True(t, builder.IsEmpty())
+	assert.ErrorIs(t, builder.Insert("invalid..example"), trie.ErrInvalidDomain)
+	assert.True(t, builder.IsEmpty())
+	assert.Nil(t, builder.Build())
+
+	for _, domain := range []string{"+.example.com", "example.com", "+.example.com"} {
+		assert.NoError(t, builder.Insert(domain))
+	}
+	set := builder.Build()
+	assert.True(t, builder.IsEmpty())
+	assert.True(t, set.Has("example.com"))
+	assert.True(t, set.Has("www.example.com"))
+
+	var keys []string
+	set.Foreach(func(key string) bool {
+		keys = append(keys, key)
+		return true
+	})
+	slices.Sort(keys)
+	assert.Equal(t, []string{"+.example.com", "example.com"}, keys)
+
+	assert.NoError(t, builder.Insert("other.example"))
+	set = builder.Build()
+	assert.True(t, set.Has("other.example"))
+	assert.False(t, set.Has("example.com"))
+
+	assert.NoError(t, builder.Insert("discard.example"))
+	builder.Reset()
+	assert.True(t, builder.IsEmpty())
+	assert.Nil(t, builder.Build())
+}
+
 func TestDomainSetComplexWildcard(t *testing.T) {
 	tree := trie.New[struct{}]()
+	var builder trie.DomainSetBuilder
 	domainSet := []string{
 		"+.baidu.com",
 		"+.a.baidu.com",
@@ -71,9 +110,11 @@ func TestDomainSetComplexWildcard(t *testing.T) {
 
 	for _, domain := range domainSet {
 		assert.NoError(t, tree.Insert(domain, struct{}{}))
+		assert.NoError(t, builder.Insert(domain))
 	}
-	assert.False(t, tree.IsEmpty())
-	set := tree.NewDomainSet()
+	assert.False(t, builder.IsEmpty())
+	set := builder.Build()
+	assert.Equal(t, tree.NewDomainSet(), set)
 	assert.NotNil(t, set)
 	assert.False(t, set.Has("google.com"))
 	assert.True(t, set.Has("www.baidu.com"))
@@ -83,6 +124,7 @@ func TestDomainSetComplexWildcard(t *testing.T) {
 
 func TestDomainSetWildcard(t *testing.T) {
 	tree := trie.New[struct{}]()
+	var builder trie.DomainSetBuilder
 	domainSet := []string{
 		"*.*.*.baidu.com",
 		"www.baidu.*",
@@ -94,9 +136,11 @@ func TestDomainSetWildcard(t *testing.T) {
 
 	for _, domain := range domainSet {
 		assert.NoError(t, tree.Insert(domain, struct{}{}))
+		assert.NoError(t, builder.Insert(domain))
 	}
-	assert.False(t, tree.IsEmpty())
-	set := tree.NewDomainSet()
+	assert.False(t, builder.IsEmpty())
+	set := builder.Build()
+	assert.Equal(t, tree.NewDomainSet(), set)
 	assert.NotNil(t, set)
 	assert.True(t, set.Has("www.baidu.com"))
 	assert.True(t, set.Has("test.test.baidu.com"))
@@ -112,10 +156,13 @@ func TestDomainSetWildcard(t *testing.T) {
 
 func TestDomainSetCase(t *testing.T) {
 	tree := trie.New[struct{}]()
-	for _, domain := range []string{"example.com", "+.mixed.example.org"} {
+	var builder trie.DomainSetBuilder
+	for _, domain := range []string{"example.com", "EXAMPLE.COM", "+.mixed.example.org"} {
 		assert.NoError(t, tree.Insert(domain, struct{}{}))
+		assert.NoError(t, builder.Insert(domain))
 	}
-	set := tree.NewDomainSet()
+	set := builder.Build()
+	assert.Equal(t, tree.NewDomainSet(), set)
 	assert.NotNil(t, set)
 	assert.True(t, set.Has("EXAMPLE.COM"))
 	assert.True(t, set.Has("ExAmPlE.cOm"))
@@ -127,10 +174,13 @@ func TestDomainSetCase(t *testing.T) {
 // path than the byte-wise one because the set is built with rune-wise reversal.
 func TestDomainSetUnicode(t *testing.T) {
 	tree := trie.New[struct{}]()
+	var builder trie.DomainSetBuilder
 	for _, domain := range []string{"中文.example", "+.测试.cn"} {
 		assert.NoError(t, tree.Insert(domain, struct{}{}))
+		assert.NoError(t, builder.Insert(domain))
 	}
-	set := tree.NewDomainSet()
+	set := builder.Build()
+	assert.Equal(t, tree.NewDomainSet(), set)
 	assert.NotNil(t, set)
 	assert.True(t, set.Has("中文.example"))
 	assert.True(t, set.Has("www.测试.cn"))
@@ -139,24 +189,29 @@ func TestDomainSetUnicode(t *testing.T) {
 
 func TestDomainSetOversizedKey(t *testing.T) {
 	tree := trie.New[struct{}]()
-	assert.NoError(t, tree.Insert("+.example.com", struct{}{}))
-	set := tree.NewDomainSet()
+	var builder trie.DomainSetBuilder
+	for _, domain := range []string{"+.example.com"} {
+		assert.NoError(t, tree.Insert(domain, struct{}{}))
+		assert.NoError(t, builder.Insert(domain))
+	}
+	set := builder.Build()
+	assert.Equal(t, tree.NewDomainSet(), set)
 	assert.NotNil(t, set)
 
-	var builder strings.Builder
-	for builder.Len() < 300 {
-		builder.WriteString("label.")
+	var keyBuilder strings.Builder
+	for keyBuilder.Len() < 300 {
+		keyBuilder.WriteString("label.")
 	}
-	assert.True(t, set.Has(builder.String()+"example.com"))
-	assert.False(t, set.Has(builder.String()+"example.net"))
+	assert.True(t, set.Has(keyBuilder.String()+"example.com"))
+	assert.False(t, set.Has(keyBuilder.String()+"example.net"))
 }
 
 func BenchmarkDomainSetHas(b *testing.B) {
-	tree := trie.New[struct{}]()
+	var builder trie.DomainSetBuilder
 	for i := 0; i < 10000; i++ {
-		assert.NoError(b, tree.Insert("+."+strconv.Itoa(i)+".example.com", struct{}{}))
+		assert.NoError(b, builder.Insert("+."+strconv.Itoa(i)+".example.com"))
 	}
-	set := tree.NewDomainSet()
+	set := builder.Build()
 
 	// Keys are split by length because the Go compiler only keeps a
 	// non-constant sized allocation off the heap up to 32 bytes, so hostnames
@@ -187,4 +242,64 @@ func BenchmarkDomainSetHas(b *testing.B) {
 			}
 		})
 	}
+}
+
+func BenchmarkDomainSetBuild(b *testing.B) {
+	suffixes := [...]string{
+		"google.com",
+		"github.io",
+		"cloudflare.net",
+		"mozilla.org",
+		"amazonaws.com",
+		"apple.com",
+		"telegram.org",
+		"example.co.uk",
+	}
+	domains := make([]string, 10000)
+	for i := range domains {
+		domain := strconv.Itoa(i) + "." + suffixes[i%len(suffixes)]
+		switch i % 20 {
+		case 0:
+			domains[i] = domain
+		case 1:
+			domains[i] = "." + domain
+		case 2:
+			domains[i] = "*." + domain
+		case 3:
+			domains[i] = "stun.*." + domain
+		default:
+			domains[i] = "+." + domain
+		}
+		if i%50 == 49 {
+			domains[i] = domains[i-1]
+		}
+	}
+
+	b.Run("via_trie", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			tree := trie.New[struct{}]()
+			for _, domain := range domains {
+				if err := tree.Insert(domain, struct{}{}); err != nil {
+					b.Fatal(err)
+				}
+			}
+			set := tree.NewDomainSet()
+			runtime.KeepAlive(set)
+		}
+	})
+
+	b.Run("builder", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			var builder trie.DomainSetBuilder
+			for _, domain := range domains {
+				if err := builder.Insert(domain); err != nil {
+					b.Fatal(err)
+				}
+			}
+			set := builder.Build()
+			runtime.KeepAlive(set)
+		}
+	})
 }

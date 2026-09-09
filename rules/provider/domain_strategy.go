@@ -14,9 +14,9 @@ import (
 )
 
 type domainStrategy struct {
-	count      int
-	domainTrie *trie.DomainTrie[struct{}]
-	domainSet  *trie.DomainSet
+	count            int
+	domainSetBuilder trie.DomainSetBuilder
+	domainSet        *trie.DomainSet
 }
 
 func (d *domainStrategy) Behavior() P.RuleBehavior {
@@ -32,7 +32,7 @@ func (d *domainStrategy) Count() int {
 }
 
 func (d *domainStrategy) Reset() {
-	d.domainTrie = trie.New[struct{}]()
+	d.domainSetBuilder.Reset()
 	d.domainSet = nil
 	d.count = 0
 }
@@ -42,7 +42,7 @@ func (d *domainStrategy) Insert(rule string) {
 		log.Warnln("skip invalid domain from rule provider: invalid domain %q: slash is not allowed", rule)
 		return
 	}
-	err := d.domainTrie.Insert(rule, struct{}{})
+	err := d.domainSetBuilder.Insert(rule)
 	if err != nil {
 		log.Warnln("skip invalid domain from rule provider: %s", err)
 	} else {
@@ -51,8 +51,7 @@ func (d *domainStrategy) Insert(rule string) {
 }
 
 func (d *domainStrategy) FinishInsert() {
-	d.domainSet = d.domainTrie.NewDomainSet()
-	d.domainTrie = nil
+	d.domainSet = d.domainSetBuilder.Build()
 }
 
 func (d *domainStrategy) FromMrs(r io.Reader, count int) error {

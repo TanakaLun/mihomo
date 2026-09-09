@@ -10,6 +10,7 @@ import (
 
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/openacid/low/bitmap"
+	"golang.org/x/exp/slices"
 )
 
 const (
@@ -26,20 +27,78 @@ type DomainSet struct {
 
 type qElt struct{ s, e, col int }
 
+// DomainSetBuilder incrementally collects domain patterns for a DomainSet.
+// Its zero value is ready to use.
+type DomainSetBuilder struct {
+	keys []string
+}
+
+// Insert validates and adds a domain pattern to the builder. It accepts the
+// same domain syntax as [DomainTrie.Insert].
+func (b *DomainSetBuilder) Insert(domain string) error {
+	parts, err := ValidAndSplitDomain(domain)
+	if err != nil {
+		return err
+	}
+
+	if parts[0] == complexWildcard {
+		b.insert(parts[1:])
+		b.insert(parts)
+	} else {
+		b.insert(parts)
+	}
+	return nil
+}
+
+func (b *DomainSetBuilder) insert(parts []string) {
+	if parts[0] == dotWildcard {
+		parts[0] = complexWildcard
+	}
+	b.keys = append(b.keys, utils.Reverse(joinDomain(parts)))
+}
+
+// IsEmpty reports whether the builder contains any domain paths.
+func (b *DomainSetBuilder) IsEmpty() bool {
+	return b == nil || len(b.keys) == 0
+}
+
+// Reset discards all domains accumulated by the builder.
+func (b *DomainSetBuilder) Reset() {
+	b.keys = nil
+}
+
+// Build consumes the accumulated domains and creates an immutable DomainSet.
+// The builder can be reused after Build returns.
+func (b *DomainSetBuilder) Build() *DomainSet {
+	if b == nil {
+		return nil
+	}
+	keys := b.keys
+	b.keys = nil
+	return buildDomainSet(keys)
+}
+
 // NewDomainSet creates a new *DomainSet struct, from a DomainTrie.
 func (t *DomainTrie[T]) NewDomainSet() *DomainSet {
-	reserveDomains := make([]string, 0)
-	t.Foreach(func(domain string, data T) bool {
-		reserveDomains = append(reserveDomains, utils.Reverse(domain))
+	keys := make([]string, 0)
+	t.Foreach(func(domain string, _ T) bool {
+		keys = append(keys, utils.Reverse(domain))
 		return true
 	})
-	// ensure that the same prefix is continuous
-	// and according to the ascending sequence of length
-	sort.Strings(reserveDomains)
-	keys := reserveDomains
+	return buildDomainSet(keys)
+}
+
+func buildDomainSet(keys []string) *DomainSet {
 	if len(keys) == 0 {
 		return nil
 	}
+	// ensure that the same prefix is continuous
+	// and according to the ascending sequence of length
+	sort.Strings(keys)
+	// The construction loop below consumes only one terminal key per node, so a
+	// duplicate would be indexed past its end and panic.
+	keys = slices.Compact(keys)
+
 	ss := &DomainSet{}
 	lIdx := 0
 

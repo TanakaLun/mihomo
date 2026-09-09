@@ -1366,7 +1366,8 @@ proxies: # socks5
   - name: "zerotier"
     type: zerotier
     network: "0123456789abcdef" # 16-digit ZeroTier network ID
-    # state-dir: ./zerotier-node # persistent node identity; defaults to an isolated directory derived from network and outbound name
+    # state-dir: ./zerotier-node # persistent node state and default identity; defaults to an isolated directory derived from network and outbound name
+    # identity-secret: "0123456789:0:public-key:private-key" # complete identity.secret contents; overrides the identity in state-dir and is not written there
     # planet: ./planet # optional private planet file; replaces the built-in Earth planet
     # mtu: 1400 # optional local MTU override; cannot exceed the controller MTU
     # physical-mtu: 1432 # optional ZeroTier UDP payload MTU (510-10324; default 1432)

@@ -64,6 +64,9 @@ type TunOption struct {
 	// darwin special config
 	RecvMsgX bool `inbound:"recvmsgx,omitempty"`
 	SendMsgX bool `inbound:"sendmsgx,omitempty"`
+
+	// gvisor special config (Non-public option; do not include it in the document.)
+	ProcessorsPerChannel int `inbound:"processors-per-channel,omitempty"`
 }
 
 var _ encoding.TextUnmarshaler = (*netip.Addr)(nil)   // ensure netip.Addr can decode direct by structure package
@@ -141,6 +144,8 @@ func NewTun(options *TunOption) (*Tun, error) {
 
 			RecvMsgX: options.RecvMsgX,
 			SendMsgX: options.SendMsgX,
+
+			ProcessorsPerChannel: options.ProcessorsPerChannel,
 		},
 	}, nil
 }

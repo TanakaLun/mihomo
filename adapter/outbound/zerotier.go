@@ -37,6 +37,10 @@ const (
 	// and IP-stack delivery while retaining callback order.
 	zeroTierFrameBatchSize       = 64
 	zeroTierFrameDropLogInterval = 10 * time.Second
+	// A configured identity cannot be rotated after a collision. Retrying at a
+	// bounded rate lets it recover after the other node goes away without
+	// repeatedly recreating the local runtime.
+	zeroTierIdentityCollisionRetryInterval = 30 * time.Second
 )
 
 var errZeroTierClosed = errors.New("ZeroTier outbound closed")
@@ -45,15 +49,16 @@ var errZeroTierStaleConfig = errors.New("stale ZeroTier network configuration")
 
 type ZeroTier struct {
 	*Base
-	option            ZeroTierOption
-	networkID         uint64
-	planet            *ZT.World
-	orbits            []zeroTierOrbit
-	remoteTraceTarget ZT.Address
-	stateStore        ZT.StateStore
-	dns               []dns.NameServer
-	ctx               context.Context
-	cancel            context.CancelFunc
+	option             ZeroTierOption
+	networkID          uint64
+	configuredIdentity ZT.Identity
+	planet             *ZT.World
+	orbits             []zeroTierOrbit
+	remoteTraceTarget  ZT.Address
+	stateStore         ZT.StateStore
+	dns                []dns.NameServer
+	ctx                context.Context
+	cancel             context.CancelFunc
 
 	// Lock acquisition rules. Rows are locks already held; columns are locks to
 	// acquire next. Any lock may be acquired when no ZeroTier lock is held.
@@ -72,9 +77,10 @@ type ZeroTier struct {
 	// goroutine. Control-plane operations take the write lock, while data-plane
 	// use of mutable IP-link configuration takes the read lock. stateMu is only a
 	// short-lived field lock and is never held while acquiring operationMu.
-	operationMu       sync.RWMutex
-	closed            bool
-	backgroundStarted bool
+	operationMu              sync.RWMutex
+	closed                   bool
+	backgroundStarted        bool
+	identityCollisionRetryAt time.Time
 
 	frameCh  chan zeroTierInboundFrame
 	configCh chan struct{}
@@ -104,6 +110,7 @@ type ZeroTierOption struct {
 	Name              string                `proxy:"name"`
 	Network           string                `proxy:"network"`
 	StateDir          string                `proxy:"state-dir,omitempty"`
+	IdentitySecret    string                `proxy:"identity-secret,omitempty"`
 	Planet            string                `proxy:"planet,omitempty"`
 	MTU               int                   `proxy:"mtu,omitempty"`
 	IPStack           IPStackOption         `proxy:"ip-stack,omitempty"`
@@ -196,6 +203,19 @@ func NewZeroTier(option ZeroTierOption) (*ZeroTier, error) {
 	if err != nil {
 		return nil, err
 	}
+	var configuredIdentity ZT.Identity
+	if option.IdentitySecret != "" {
+		configuredIdentity, err = ZT.ParseIdentity(option.IdentitySecret)
+		if err != nil {
+			return nil, fmt.Errorf("parse ZeroTier identity-secret: %w", err)
+		}
+		if !configuredIdentity.HasPrivate() {
+			return nil, fmt.Errorf("ZeroTier identity-secret must contain private keys: %w", ZT.ErrPrivateKey)
+		}
+		if err = configuredIdentity.Validate(); err != nil {
+			return nil, fmt.Errorf("validate ZeroTier identity-secret: %w", err)
+		}
+	}
 	if option.MTU != 0 && (option.MTU < ZT.MinNetworkMTU || option.MTU > ZT.MaxNetworkMTU) {
 		return nil, fmt.Errorf("ZeroTier MTU must be between %d and %d", ZT.MinNetworkMTU, ZT.MaxNetworkMTU)
 	}
@@ -285,18 +305,19 @@ func NewZeroTier(option ZeroTierOption) (*ZeroTier, error) {
 			RoutingMark:  option.RoutingMark,
 			Prefer:       option.IPVersion,
 		}),
-		option:            option,
-		networkID:         networkID,
-		planet:            planet,
-		orbits:            orbits,
-		remoteTraceTarget: remoteTraceTarget,
-		stateStore:        stateStore,
-		dns:               nameServers,
-		ctx:               ctx,
-		cancel:            cancel,
-		frameCh:           make(chan zeroTierInboundFrame, zeroTierFrameQueueSize),
-		configCh:          make(chan struct{}, 1),
-		stateCh:           make(chan struct{}),
+		option:             option,
+		networkID:          networkID,
+		configuredIdentity: configuredIdentity,
+		planet:             planet,
+		orbits:             orbits,
+		remoteTraceTarget:  remoteTraceTarget,
+		stateStore:         stateStore,
+		dns:                nameServers,
+		ctx:                ctx,
+		cancel:             cancel,
+		frameCh:            make(chan zeroTierInboundFrame, zeroTierFrameQueueSize),
+		configCh:           make(chan struct{}, 1),
+		stateCh:            make(chan struct{}),
 	}
 	outbound.dialer = option.NewDialer(outbound.DialOptions())
 	wireConfig, err := outbound.wireTransportConfig()
@@ -434,6 +455,17 @@ func (z *ZeroTier) startLocked() error {
 	if z.closed || z.ctx.Err() != nil {
 		return errZeroTierClosed
 	}
+	if !z.identityCollisionRetryAt.IsZero() {
+		retryAfter := time.Until(z.identityCollisionRetryAt)
+		if retryAfter > 0 {
+			retryAfter = retryAfter.Round(time.Second)
+			if retryAfter < time.Second {
+				retryAfter = time.Second
+			}
+			return fmt.Errorf("configured ZeroTier identity %s can retry in %s: %w", z.configuredIdentity.Address(), retryAfter, ZT.ErrIdentityCollision)
+		}
+		z.identityCollisionRetryAt = time.Time{}
+	}
 	z.stateMu.RLock()
 	started := z.runtime != nil
 	z.stateMu.RUnlock()
@@ -458,9 +490,10 @@ func (z *ZeroTier) startLocked() error {
 		last  time.Time
 	}
 	node, err := ZT.NewNode(ZT.NodeConfig{
-		Store:  z.stateStore,
-		Sender: wireTransport,
-		Planet: z.planet,
+		Identity: z.configuredIdentity,
+		Store:    z.stateStore,
+		Sender:   wireTransport,
+		Planet:   z.planet,
 		OnEvent: func(event ZT.Event) {
 			z.handleNodeEvent(runtime, event)
 		},
@@ -757,10 +790,19 @@ func (z *ZeroTier) recoverIdentityCollision(source *zeroTierRuntime, address ZT.
 		return
 	}
 	runtime, device := z.detachRuntimeLocked()
-	z.resetNetworkStateLocked(nil)
+	var collisionErr error
+	if !z.configuredIdentity.Address().IsZero() {
+		collisionErr = fmt.Errorf("configured ZeroTier identity %s: %w", address, ZT.ErrIdentityCollision)
+		z.identityCollisionRetryAt = time.Now().Add(zeroTierIdentityCollisionRetryInterval)
+	}
+	z.resetNetworkStateLocked(collisionErr)
 	z.stateMu.Unlock()
 
 	_ = runtime.close(device)
+	if collisionErr != nil {
+		log.Warnln("[ZeroTier](%s) %v; the next use can retry in %s", z.Name(), collisionErr, zeroTierIdentityCollisionRetryInterval)
+		return
+	}
 	if err := ZT.RotateIdentityState(z.stateStore); err != nil {
 		log.Warnln("[ZeroTier](%s) unable to rotate collided identity: %v", z.Name(), err)
 	}

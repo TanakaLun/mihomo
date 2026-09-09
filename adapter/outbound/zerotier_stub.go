@@ -13,6 +13,7 @@ type ZeroTierOption struct {
 	Name              string                `proxy:"name"`
 	Network           string                `proxy:"network"`
 	StateDir          string                `proxy:"state-dir,omitempty"`
+	IdentitySecret    string                `proxy:"identity-secret,omitempty"`
 	Planet            string                `proxy:"planet,omitempty"`
 	MTU               int                   `proxy:"mtu,omitempty"`
 	IPStack           IPStackOption         `proxy:"ip-stack,omitempty"`

@@ -150,11 +150,17 @@ func TestTrie_InvalidWildcardPlacement(t *testing.T) {
 		for _, d := range valid {
 			tree := trie.New[netip.Addr]()
 			assert.NoError(t, tree.Insert(d, localIP))
-			set := tree.NewDomainSet()
+			setFromTrie := tree.NewDomainSet()
+			var builder trie.DomainSetBuilder
+			assert.NoError(t, builder.Insert(d))
+			setFromBuilder := builder.Build()
+			assert.Equal(t, setFromTrie, setFromBuilder)
 			for _, q := range queries {
 				searchHit := tree.Search(q) != nil
-				setHit := set != nil && set.Has(q)
-				assert.Equalf(t, searchHit, setHit, "pattern %q query %q: Search=%v Has=%v", d, q, searchHit, setHit)
+				trieSetHit := setFromTrie != nil && setFromTrie.Has(q)
+				builderSetHit := setFromBuilder != nil && setFromBuilder.Has(q)
+				assert.Equalf(t, searchHit, trieSetHit, "pattern %q query %q: Search=%v TrieSet=%v", d, q, searchHit, trieSetHit)
+				assert.Equalf(t, searchHit, builderSetHit, "pattern %q query %q: Search=%v BuilderSet=%v", d, q, searchHit, builderSetHit)
 			}
 		}
 	})

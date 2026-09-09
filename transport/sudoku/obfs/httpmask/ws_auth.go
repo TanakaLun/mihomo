@@ -8,8 +8,6 @@ import (
 	"encoding/binary"
 	"strings"
 	"time"
-
-	"github.com/metacubex/http"
 )
 
 const (
@@ -17,6 +15,11 @@ const (
 	tunnelAuthHeaderPrefix = "Bearer "
 	tunnelAuthQueryKey     = "auth"
 )
+
+// tunnelAuth is intentionally used only by the WebSocket transport. The
+// stream and poll transports already have a cryptographic Sudoku handshake;
+// duplicating it at the HTTP layer adds latency and another compatibility
+// surface without improving tunnel security.
 
 type tunnelAuth struct {
 	key  [32]byte // derived HMAC key
@@ -55,16 +58,6 @@ func (a *tunnelAuth) token(mode TunnelMode, method, path string, now time.Time) 
 	binary.BigEndian.PutUint64(buf[:8], uint64(ts))
 	copy(buf[8:], sig[:])
 	return base64.RawURLEncoding.EncodeToString(buf[:])
-}
-
-func (a *tunnelAuth) verify(headers map[string]string, mode TunnelMode, method, path string, now time.Time) bool {
-	if a == nil {
-		return true
-	}
-	if headers == nil {
-		return false
-	}
-	return a.verifyValue(headers["authorization"], mode, method, path, now)
 }
 
 func (a *tunnelAuth) verifyValue(val string, mode TunnelMode, method, path string, now time.Time) bool {
@@ -129,33 +122,4 @@ func (a *tunnelAuth) sign(mode TunnelMode, method, path string, ts int64) [16]by
 	var out [16]byte
 	copy(out[:], full[:16])
 	return out
-}
-
-type httpHeaderSetter = http.Header
-
-func applyTunnelAuthHeader(h httpHeaderSetter, auth *tunnelAuth, mode TunnelMode, method, path string) {
-	if auth == nil || h == nil {
-		return
-	}
-	token := auth.token(mode, method, path, time.Now())
-	if token == "" {
-		return
-	}
-	h.Set(tunnelAuthHeaderKey, tunnelAuthHeaderPrefix+token)
-}
-
-func applyTunnelAuth(req *http.Request, auth *tunnelAuth, mode TunnelMode, method, path string) {
-	if auth == nil || req == nil {
-		return
-	}
-	token := auth.token(mode, method, path, time.Now())
-	if token == "" {
-		return
-	}
-	req.Header.Set(tunnelAuthHeaderKey, tunnelAuthHeaderPrefix+token)
-	if req.URL != nil {
-		q := req.URL.Query()
-		q.Set(tunnelAuthQueryKey, token)
-		req.URL.RawQuery = q.Encode()
-	}
 }

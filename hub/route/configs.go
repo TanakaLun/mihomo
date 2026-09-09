@@ -108,6 +108,9 @@ type tunSchema struct {
 	// darwin special config
 	RecvMsgX *bool `yaml:"recvmsgx" json:"recvmsgx,omitempty"`
 	SendMsgX *bool `yaml:"sendmsgx" json:"sendmsgx,omitempty"`
+
+	// gvisor special config (Non-public option; do not include it in the document.)
+	ProcessorsPerChannel *int `yaml:"processors-per-channel" json:"processors-per-channel,omitempty"`
 }
 
 type tuicServerSchema struct {
@@ -269,6 +272,9 @@ func pointerOrDefaultTun(p *tunSchema, def LC.Tun) LC.Tun {
 		}
 		if p.SendMsgX != nil {
 			def.SendMsgX = *p.SendMsgX
+		}
+		if p.ProcessorsPerChannel != nil {
+			def.ProcessorsPerChannel = *p.ProcessorsPerChannel
 		}
 	}
 	return def
