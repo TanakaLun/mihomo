@@ -81,6 +81,10 @@ type Inbound struct {
 	tcDataPlane         *tcDataPlane
 	tcDataPlaneAccess   sync.RWMutex
 	interfaceMonitor    tcInterfaceMonitor
+	networkStateInitialized  bool
+	networkStateDefault      string
+	networkStateAddresses    []netip.Addr
+	networkStateInterfaces   []string
 	lifecycleAccess     sync.Mutex
 	localRoutes         []*localRoute
 

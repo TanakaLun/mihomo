@@ -53,14 +53,11 @@ func (p BypassCIDRPolicy) Counts() (int, int) {
 	return len(p.ipv4), len(p.ipv6)
 }
 
-// Prefixes returns the IPv4 and IPv6 prefixes of the policy. It is used by the
-// mihomo adapter to publish the effective bypass set to the DNS fake-ip
-// middleware.
 func (p BypassCIDRPolicy) Prefixes() []netip.Prefix {
-	prefixes := make([]netip.Prefix, 0, len(p.ipv4)+len(p.ipv6))
-	prefixes = append(prefixes, p.ipv4...)
-	prefixes = append(prefixes, p.ipv6...)
-	return prefixes
+	out := make([]netip.Prefix, 0, len(p.ipv4)+len(p.ipv6))
+	out = append(out, p.ipv4...)
+	out = append(out, p.ipv6...)
+	return out
 }
 
 func compileUIDPolicy(policy LocalPolicy) ([]uidLPMKey, bool, error) {

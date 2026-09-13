@@ -143,7 +143,14 @@ type bypassCIDRBackendVersion struct {
 func (i *Inbound) retryBypassRuleSetIfNeededLocked() tcSharedRewriteOutcome {
 	i.bypassRuleSetAccess.Lock()
 	defer i.bypassRuleSetAccess.Unlock()
-	if !i.bypassRuleSetStarted || !i.bypassRuleSetNeedsRetry {
+	if !i.bypassRuleSetStarted {
+		return tcSharedRewriteSettled
+	}
+	if i.bypassRuleSetBackendRequiresRebuildLocked() {
+		i.bypassRuleSetNeedsRetry = false
+		return tcSharedRewriteUnrecoverable
+	}
+	if !i.bypassRuleSetNeedsRetry {
 		return tcSharedRewriteSettled
 	}
 	i.bypassRuleSetRetryCount++
@@ -153,4 +160,19 @@ func (i *Inbound) retryBypassRuleSetIfNeededLocked() tcSharedRewriteOutcome {
 	}
 	i.bypassRuleSetNeedsRetry = false
 	return tcSharedRewriteSettled
+}
+
+func (i *Inbound) bypassRuleSetBackendRequiresRebuildLocked() bool {
+	if backend := i.tcBackend(); backend != nil && backend.RequiresRebuild() {
+		return true
+	}
+	if backend := i.cgroupBackendInstance(); backend != nil && backend.RequiresRebuild() {
+		return true
+	}
+	if shared := i.sharedRewriteInstance(); shared != nil {
+		if backend := shared.sharedBackendInstance(); backend != nil && backend.RequiresRebuild() {
+			return true
+		}
+	}
+	return false
 }

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	commonEBPF "github.com/metacubex/mihomo/common/ebpf"
-	E "github.com/metacubex/sing/common/exceptions"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -22,22 +21,17 @@ const (
 	udpClientShardCount = 16
 	udpReplyAliasLimit  = 64
 
-	// udpReplySocketShardCapacity bounds each shard's transparent reply
-	// sockets independently, so the pool's total footprint is bounded
-	// (udpClientShardCount * udpReplySocketShardCapacity sockets/FDs) without
-	// needing a cross-shard lock on every get(). One reply socket exists per
-	// distinct original destination ever contacted through the non-cgroup
-	// data planes, which without a bound grows for as long as the process
-	// keeps running and clients keep reaching new destinations.
-	udpReplySocketShardCapacity = 256
+	// One transparent reply socket exists per distinct original destination
+	// reached through a non-cgroup data plane. Bound the whole pool rather than
+	// each shard so hash distribution cannot reject work below this limit.
+	udpReplySocketCapacity = 4096
 
-	// udpReplySocketIdleTimeout and udpReplySocketSweepInterval govern the
-	// background reclaim in addition to the capacity-triggered one in get():
-	// a socket unused for this long is closed even before its shard fills up,
-	// so idle sockets do not simply wait for capacity pressure to be reclaimed.
-	udpReplySocketIdleTimeout   = 5 * time.Minute
-	udpReplySocketSweepInterval = time.Minute
+	// Idle sockets are reclaimed at their next actual expiry deadline in
+	// addition to capacity-triggered eviction in get().
+	udpReplySocketIdleTimeout = 5 * time.Minute
 )
+
+var errUDPReplySocketCapacity = errors.New("UDP eBPF reply socket pool is at capacity")
 
 type udpClientTable struct {
 	clientShards [udpClientShardCount]udpClientShard
@@ -288,9 +282,8 @@ func sourcePacketInfo(address netip.Addr) []byte {
 // an inbound. A socket bound to an original destination can send replies to any
 // client, so keeping it at client-state scope needlessly multiplies sockets.
 //
-// Each shard is capacity-bounded (udpReplySocketShardCapacity) and idle
-// sockets (unused for udpReplySocketIdleTimeout) are reclaimed by a
-// background sweeper as well as opportunistically when a shard is full and a
+// The pool is globally capacity-bounded and idle sockets are reclaimed by a
+// background sweeper as well as opportunistically when the pool is full and a
 // new destination needs a socket. get() marks the entry it returns as in use
 // until the caller invokes the release func it also returns; eviction skips
 // any entry still in use, so a send in flight is never handed a closed
@@ -300,11 +293,16 @@ func sourcePacketInfo(address netip.Addr) []byte {
 // already treats a resulting write error as expected, not an eviction a send
 // could be caught unaware by.
 type udpReplySocketPool struct {
-	shards      [udpClientShardCount]udpReplySocketShard
-	closed      atomic.Bool
-	stats       udpReplySocketPoolStats
-	sweepAccess sync.Mutex
-	sweepCancel context.CancelFunc
+	shards       [udpClientShardCount]udpReplySocketShard
+	createAccess sync.Mutex
+	closed       atomic.Bool
+	stats        udpReplySocketPoolStats
+	sweepAccess  sync.Mutex
+	sweepCancel  context.CancelFunc
+	sweepWake    chan struct{}
+	sweepDone    chan struct{}
+	capacity     int64         // test override; zero uses udpReplySocketCapacity
+	idleTimeout  time.Duration // test override; zero uses udpReplySocketIdleTimeout
 }
 
 type udpReplySocketShard struct {
@@ -318,10 +316,8 @@ type udpReplySocketEntry struct {
 	inUse    atomic.Int32 // active senders; eviction skips entries > 0
 }
 
-// udpReplySocketPoolStats are the counters item 8 of the eBPF inbound
-// reliability work exposes through diagnostics: current pressure (count vs.
-// the fixed per-shard capacity), the high-water mark, and how many times
-// this pool reclaimed or refused a socket.
+// udpReplySocketPoolStats exposes current usage, its high-water mark, and how
+// often capacity handling reclaimed or refused a socket.
 type udpReplySocketPoolStats struct {
 	count            atomic.Int64
 	peak             atomic.Int64
@@ -366,29 +362,55 @@ func (p *udpReplySocketPool) get(
 		shard.access.Unlock()
 		return entry.conn, releaseUDPReplySocketEntry(entry), nil
 	}
-	if len(shard.sockets) >= udpReplySocketShardCapacity && !p.evictOneIdleLocked(shard) {
+	shard.access.Unlock()
+
+	// Cache misses create kernel sockets and are already the slow path. Serialize
+	// only this path so the global count check and admission remain exact while
+	// cache hits continue to use their shard lock alone.
+	p.createAccess.Lock()
+	defer p.createAccess.Unlock()
+	if p.closed.Load() {
+		return nil, nil, net.ErrClosed
+	}
+	shard.access.Lock()
+	if entry := shard.sockets[source]; entry != nil {
+		entry.lastUsed.Store(time.Now().UnixNano())
+		entry.inUse.Add(1)
 		shard.access.Unlock()
+		return entry.conn, releaseUDPReplySocketEntry(entry), nil
+	}
+	shard.access.Unlock()
+	if p.stats.count.Load() >= p.socketCapacity() && !p.evictOldestIdle() {
 		p.stats.capacityRejected.Add(1)
-		return nil, nil, E.New(
-			"UDP eBPF reply socket pool shard is at capacity (", udpReplySocketShardCapacity, "); ",
-			"every socket in it is currently in use",
-		)
+		return nil, nil, errUDPReplySocketCapacity
 	}
 	socket, err := create(source)
 	if err != nil {
-		shard.access.Unlock()
 		return nil, nil, err
 	}
 	entry := &udpReplySocketEntry{conn: socket}
 	entry.lastUsed.Store(time.Now().UnixNano())
 	entry.inUse.Store(1)
+	if p.closed.Load() {
+		_ = socket.Close()
+		return nil, nil, net.ErrClosed
+	}
+	shard.access.Lock()
 	if shard.sockets == nil {
 		shard.sockets = make(map[netip.AddrPort]*udpReplySocketEntry)
 	}
 	shard.sockets[source] = entry
 	shard.access.Unlock()
 	p.addCount(1)
+	p.requestSweep()
 	return socket, releaseUDPReplySocketEntry(entry), nil
+}
+
+func (p *udpReplySocketPool) socketCapacity() int64 {
+	if p.capacity > 0 {
+		return p.capacity
+	}
+	return udpReplySocketCapacity
 }
 
 func releaseUDPReplySocketEntry(entry *udpReplySocketEntry) func() {
@@ -405,19 +427,41 @@ func (p *udpReplySocketPool) addCount(delta int64) {
 	}
 }
 
-// evictOneIdleLocked closes and removes one entry with no sender currently
-// using it, to make room for a new destination once a shard is full. Called
-// with shard.access already held. Map iteration order is randomized rather
-// than strictly least-recently-used, which is enough to keep the shard
-// usable under sustained pressure without a second per-entry ordering
-// structure to maintain.
-func (p *udpReplySocketPool) evictOneIdleLocked(shard *udpReplySocketShard) bool {
-	for source, entry := range shard.sockets {
-		if entry.inUse.Load() > 0 {
+// evictOldestIdle makes room at the global limit. It never holds more than one
+// shard lock and validates the selected entry before closing it, so concurrent
+// cache hits cannot lose a socket that became active during the scan.
+func (p *udpReplySocketPool) evictOldestIdle() bool {
+	for attempt := 0; attempt < 2; attempt++ {
+		selectedShard := -1
+		var selectedSource netip.AddrPort
+		var selectedEntry *udpReplySocketEntry
+		var selectedLastUsed int64
+		for index := range p.shards {
+			shard := &p.shards[index]
+			shard.access.Lock()
+			for source, entry := range shard.sockets {
+				lastUsed := entry.lastUsed.Load()
+				if entry.inUse.Load() == 0 && (selectedEntry == nil || lastUsed < selectedLastUsed) {
+					selectedShard = index
+					selectedSource = source
+					selectedEntry = entry
+					selectedLastUsed = lastUsed
+				}
+			}
+			shard.access.Unlock()
+		}
+		if selectedEntry == nil {
+			return false
+		}
+		shard := &p.shards[selectedShard]
+		shard.access.Lock()
+		if shard.sockets[selectedSource] != selectedEntry || selectedEntry.inUse.Load() != 0 || selectedEntry.lastUsed.Load() != selectedLastUsed {
+			shard.access.Unlock()
 			continue
 		}
-		_ = entry.conn.Close()
-		delete(shard.sockets, source)
+		_ = selectedEntry.conn.Close()
+		delete(shard.sockets, selectedSource)
+		shard.access.Unlock()
 		p.stats.count.Add(-1)
 		p.stats.evicted.Add(1)
 		return true
@@ -429,19 +473,23 @@ func (p *udpReplySocketPool) shardIndex(source netip.AddrPort) int {
 	return shardIndexForAddrPort(source, udpClientShardCount)
 }
 
-// startSweeper starts the background idle-socket reclaim, tied to ctx so it
-// stops on its own if the inbound's own context is ever canceled without an
-// explicit stopSweeper call. A second call before stopSweeper is a no-op:
-// the pool already has a sweeper running.
+// startSweeper starts deadline-driven idle-socket reclaim. A second call before
+// stopSweeper is a no-op.
 func (p *udpReplySocketPool) startSweeper(ctx context.Context) {
 	p.sweepAccess.Lock()
-	defer p.sweepAccess.Unlock()
 	if p.sweepCancel != nil {
+		p.sweepAccess.Unlock()
 		return
 	}
 	sweepCtx, cancel := context.WithCancel(ctx)
+	wake := make(chan struct{}, 1)
+	done := make(chan struct{})
 	p.sweepCancel = cancel
-	go p.runSweeper(sweepCtx)
+	p.sweepWake = wake
+	p.sweepDone = done
+	p.sweepAccess.Unlock()
+	go p.runSweeper(sweepCtx, wake, done)
+	p.requestSweep()
 }
 
 // stopSweeper stops the background idle-socket reclaim. Safe to call even if
@@ -449,24 +497,76 @@ func (p *udpReplySocketPool) startSweeper(ctx context.Context) {
 func (p *udpReplySocketPool) stopSweeper() {
 	p.sweepAccess.Lock()
 	cancel := p.sweepCancel
+	done := p.sweepDone
 	p.sweepCancel = nil
+	p.sweepWake = nil
+	p.sweepDone = nil
 	p.sweepAccess.Unlock()
 	if cancel != nil {
 		cancel()
+		<-done
 	}
 }
 
-func (p *udpReplySocketPool) runSweeper(ctx context.Context) {
-	ticker := time.NewTicker(udpReplySocketSweepInterval)
-	defer ticker.Stop()
+func (p *udpReplySocketPool) requestSweep() {
+	p.sweepAccess.Lock()
+	wake := p.sweepWake
+	p.sweepAccess.Unlock()
+	if wake == nil {
+		return
+	}
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+func (p *udpReplySocketPool) runSweeper(ctx context.Context, wake <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer timer.Stop()
+	var timerChannel <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			p.sweepIdle(udpReplySocketIdleTimeout)
+		case <-wake:
+		case <-timerChannel:
 		}
+		next, available := p.sweepIdleAt(time.Now(), p.socketIdleTimeout())
+		if !available {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timerChannel = nil
+			continue
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		delay := time.Until(next)
+		if delay < 0 {
+			delay = 0
+		}
+		timer.Reset(delay)
+		timerChannel = timer.C
 	}
+}
+
+func (p *udpReplySocketPool) socketIdleTimeout() time.Duration {
+	if p.idleTimeout > 0 {
+		return p.idleTimeout
+	}
+	return udpReplySocketIdleTimeout
 }
 
 // sweepIdle closes every socket that has been idle (unused, and not
@@ -474,15 +574,34 @@ func (p *udpReplySocketPool) runSweeper(ctx context.Context) {
 // destination that stops being contacted does not simply hold its socket
 // until the shard happens to fill up.
 func (p *udpReplySocketPool) sweepIdle(idleTimeout time.Duration) {
+	p.sweepIdleAt(time.Now(), idleTimeout)
+}
+
+func (p *udpReplySocketPool) sweepIdleAt(now time.Time, idleTimeout time.Duration) (time.Time, bool) {
 	if p.closed.Load() {
-		return
+		return time.Time{}, false
 	}
-	deadline := time.Now().Add(-idleTimeout).UnixNano()
+	deadline := now.Add(-idleTimeout).UnixNano()
+	var next time.Time
 	for index := range p.shards {
 		shard := &p.shards[index]
 		shard.access.Lock()
 		for source, entry := range shard.sockets {
-			if entry.inUse.Load() > 0 || entry.lastUsed.Load() > deadline {
+			lastUsed := entry.lastUsed.Load()
+			expires := time.Unix(0, lastUsed).Add(idleTimeout)
+			if entry.inUse.Load() > 0 {
+				if !expires.After(now) {
+					expires = now.Add(idleTimeout)
+				}
+				if next.IsZero() || expires.Before(next) {
+					next = expires
+				}
+				continue
+			}
+			if lastUsed > deadline {
+				if next.IsZero() || expires.Before(next) {
+					next = expires
+				}
 				continue
 			}
 			_ = entry.conn.Close()
@@ -492,6 +611,7 @@ func (p *udpReplySocketPool) sweepIdle(idleTimeout time.Duration) {
 		}
 		shard.access.Unlock()
 	}
+	return next, !next.IsZero()
 }
 
 func (p *udpReplySocketPool) close() error {
@@ -511,6 +631,8 @@ func (p *udpReplySocketPool) reset() error {
 }
 
 func (p *udpReplySocketPool) closeSockets() error {
+	p.createAccess.Lock()
+	defer p.createAccess.Unlock()
 	var closeErr error
 	for index := range p.shards {
 		shard := &p.shards[index]
@@ -522,6 +644,7 @@ func (p *udpReplySocketPool) closeSockets() error {
 		}
 		shard.access.Unlock()
 	}
+	p.requestSweep()
 	return closeErr
 }
 

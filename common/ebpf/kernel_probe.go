@@ -17,261 +17,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type KernelProbeMode string
-
-const (
-	KernelProbeModeAll    KernelProbeMode = "all"
-	KernelProbeModeLocal  KernelProbeMode = "local"
-	KernelProbeModeShared KernelProbeMode = "shared"
-)
-
-// KernelProbeDataPlane identifies one concrete eBPF inbound backend. An empty
-// value means that the corresponding local or shared path is disabled.
-type KernelProbeDataPlane string
-
-const (
-	KernelProbeDataPlaneTC            KernelProbeDataPlane = "tc"
-	KernelProbeDataPlaneCgroup        KernelProbeDataPlane = "cgroup"
-	KernelProbeDataPlaneSocketAssign  KernelProbeDataPlane = "socket_assign"
-	KernelProbeDataPlanePacketRewrite KernelProbeDataPlane = "packet_rewrite"
-)
-
-type KernelProbeStatus string
-
-const (
-	KernelProbePass    KernelProbeStatus = "PASS"
-	KernelProbeWarn    KernelProbeStatus = "WARN"
-	KernelProbeFail    KernelProbeStatus = "FAIL"
-	KernelProbeUnknown KernelProbeStatus = "UNKNOWN"
-)
-
-type KernelProbeImportance string
-
-const (
-	KernelProbeRequired    KernelProbeImportance = "required"
-	KernelProbePerformance KernelProbeImportance = "performance"
-)
-
-type KernelProbeOptions struct {
-	Mode                KernelProbeMode
-	LocalDataPlane      KernelProbeDataPlane
-	SharedDataPlane     KernelProbeDataPlane
-	Network             []string
-	InterfaceNames      []string
-	EnableIPv6          bool
-	NeedLPMPolicy       bool
-	NeedProcessTracking bool
-	// FakeIPICMPReply probes the fakeip_icmp object's own helper requirements.
-	// Left false (the default), nothing about this feature is probed, the
-	// same way nothing about it is loaded when TCConfig.FakeIPICMPReply is
-	// false.
-	FakeIPICMPReply bool
-}
-
-type kernelProbePlan struct {
-	localTC             bool
-	localCgroup         bool
-	sharedSocketAssign  bool
-	sharedPacketRewrite bool
-}
-
-func newKernelProbePlan(localPlane, sharedPlane KernelProbeDataPlane) kernelProbePlan {
-	return kernelProbePlan{
-		localTC:             localPlane == KernelProbeDataPlaneTC,
-		localCgroup:         localPlane == KernelProbeDataPlaneCgroup,
-		sharedSocketAssign:  sharedPlane == KernelProbeDataPlaneSocketAssign,
-		sharedPacketRewrite: sharedPlane == KernelProbeDataPlanePacketRewrite,
-	}
-}
-
-func (p kernelProbePlan) needsSocketAssignment() bool {
-	return p.localTC || p.sharedSocketAssign
-}
-
-func (p kernelProbePlan) needsTCProgram() bool {
-	return p.needsSocketAssignment() || p.sharedPacketRewrite
-}
-
-type KernelProbeFinding struct {
-	Status     KernelProbeStatus     `json:"status"`
-	Scope      string                `json:"scope"`
-	Importance KernelProbeImportance `json:"importance"`
-	Feature    string                `json:"feature"`
-	Detail     string                `json:"detail"`
-}
-
-type KernelProbeProgram struct {
-	ID       CiliumEBPF.ProgramID
-	Name     string
-	Type     CiliumEBPF.ProgramType
-	MapCount int
-}
-
-type KernelProbeReport struct {
-	Platform        string
-	KernelRelease   string
-	Architecture    string
-	Mode            KernelProbeMode
-	LocalDataPlane  KernelProbeDataPlane
-	SharedDataPlane KernelProbeDataPlane
-	Network         []string
-	IPv6            bool
-	Findings        []KernelProbeFinding
-	ActivePrograms  []KernelProbeProgram
-	ActiveStateErr  error
-}
-
-func (r *KernelProbeReport) Add(
-	status KernelProbeStatus,
-	scope string,
-	importance KernelProbeImportance,
-	feature string,
-	detail string,
-) {
-	r.Findings = append(r.Findings, KernelProbeFinding{
-		Status:     status,
-		Scope:      scope,
-		Importance: importance,
-		Feature:    feature,
-		Detail:     detail,
-	})
-}
-
-func (r *KernelProbeReport) RequiredFailures() int {
-	count := 0
-	for _, finding := range r.Findings {
-		if finding.Status == KernelProbeFail && finding.Importance == KernelProbeRequired {
-			count++
-		}
-	}
-	return count
-}
-
-func (r *KernelProbeReport) RequiredUnknowns() int {
-	count := 0
-	for _, finding := range r.Findings {
-		if finding.Status == KernelProbeUnknown && finding.Importance == KernelProbeRequired {
-			count++
-		}
-	}
-	return count
-}
-
-func (r *KernelProbeReport) RequiredIssues() int {
-	return r.RequiredFailures() + r.RequiredUnknowns()
-}
-
-func (r *KernelProbeReport) RequiredError() error {
-	for _, finding := range r.Findings {
-		if finding.Importance != KernelProbeRequired || (finding.Status != KernelProbeFail && finding.Status != KernelProbeUnknown) {
-			continue
-		}
-		return fmt.Errorf("eBPF capability %s: %s (%s)", finding.Status, finding.Feature, finding.Detail)
-	}
-	return nil
-}
-
-func (r *KernelProbeReport) Counts() map[KernelProbeStatus]int {
-	counts := make(map[KernelProbeStatus]int, 4)
-	for _, finding := range r.Findings {
-		counts[finding.Status]++
-	}
-	return counts
-}
-
-func ProbeKernel(options KernelProbeOptions) (*KernelProbeReport, error) {
-	if options.Mode == "" {
-		options.Mode = KernelProbeModeAll
-	}
-	switch options.Mode {
-	case KernelProbeModeAll, KernelProbeModeLocal, KernelProbeModeShared:
-	default:
-		return nil, fmt.Errorf("invalid eBPF probe mode: %s", options.Mode)
-	}
-	enableTCP, enableUDP, network, err := parseKernelProbeNetwork(options.Network)
-	if err != nil {
-		return nil, err
-	}
-	localPlane, sharedPlane, err := normalizeProbeDataPlanes(options)
-	if err != nil {
-		return nil, err
-	}
-	reportMode := options.Mode
-	switch {
-	case localPlane != "" && sharedPlane != "":
-		reportMode = KernelProbeModeAll
-	case localPlane != "":
-		reportMode = KernelProbeModeLocal
-	default:
-		reportMode = KernelProbeModeShared
-	}
-	memlockErr := raiseMemlockLimit()
-
-	report := &KernelProbeReport{
-		Platform:        kernelProbePlatform(),
-		KernelRelease:   kernelProbeRelease(),
-		Architecture:    runtime.GOARCH,
-		Mode:            reportMode,
-		LocalDataPlane:  localPlane,
-		SharedDataPlane: sharedPlane,
-		Network:         network,
-		IPv6:            options.EnableIPv6,
-	}
-	needLocal := localPlane != ""
-	needShared := sharedPlane != ""
-	probeCommonCapabilities(report, memlockErr, options.EnableIPv6, enableTCP, enableUDP,
-		localPlane, sharedPlane, options.NeedLPMPolicy, options.NeedProcessTracking)
-	if needLocal {
-		probeLocalCapabilities(report, localPlane, enableTCP, enableUDP)
-	}
-	if needShared {
-		probeSharedCapabilities(report, sharedPlane, options.InterfaceNames)
-	}
-	if options.FakeIPICMPReply {
-		probeFakeIPICMPCapabilities(report)
-	}
-	report.ActivePrograms, report.ActiveStateErr = probeActivePrograms()
-	return report, nil
-}
-
-func normalizeProbeDataPlanes(options KernelProbeOptions) (KernelProbeDataPlane, KernelProbeDataPlane, error) {
-	local, shared := options.LocalDataPlane, options.SharedDataPlane
-	if local == "" && shared == "" {
-		switch options.Mode {
-		case KernelProbeModeAll:
-			local, shared = KernelProbeDataPlaneCgroup, KernelProbeDataPlanePacketRewrite
-		case KernelProbeModeLocal:
-			local = KernelProbeDataPlaneCgroup
-		case KernelProbeModeShared:
-			shared = KernelProbeDataPlanePacketRewrite
-		}
-	}
-	switch local {
-	case "", KernelProbeDataPlaneTC, KernelProbeDataPlaneCgroup:
-	default:
-		return "", "", fmt.Errorf("invalid eBPF local data plane: %s", local)
-	}
-	switch shared {
-	case "", KernelProbeDataPlaneSocketAssign, KernelProbeDataPlanePacketRewrite:
-	default:
-		return "", "", fmt.Errorf("invalid eBPF shared data plane: %s", shared)
-	}
-	if local == "" && shared == "" {
-		return "", "", fmt.Errorf("at least one eBPF data plane must be selected")
-	}
-	return local, shared, nil
-}
-
-func probeCommonCapabilities(report *KernelProbeReport, memlockErr error, enableIPv6, enableTCP, enableUDP bool,
-	localPlane, sharedPlane KernelProbeDataPlane, needLPMPolicy, needProcessTracking bool) {
-	plan := newKernelProbePlan(localPlane, sharedPlane)
-	needLocal := localPlane != ""
+func probeCommonCapabilities(report *KernelProbeReport, memlockErr error, plan kernelProbePlan) {
+	needLocal := plan.localTC || plan.localCgroup
 	needSocketAssignment := plan.needsSocketAssignment()
 	needPacketRewrite := plan.sharedPacketRewrite
 	needCgroup := plan.localCgroup
 	needSelfBypass := needLocal
 	needTCProgram := plan.needsTCProgram()
-	probeLPMTrieUpdateSafety(report, needLPMPolicy)
+	probeLPMTrieUpdateSafety(report, plan.needLPMPolicy)
 
 	probeMapType(report, "common", KernelProbeRequired, CiliumEBPF.Array,
 		"Stores runtime controls.")
@@ -287,7 +40,7 @@ func probeCommonCapabilities(report *KernelProbeReport, memlockErr error, enable
 		probeMapType(report, "shared", KernelProbeRequired, CiliumEBPF.PerCPUArray,
 			"Provides per-CPU packet-rewrite scratch and counters.")
 	}
-	if enableTCP && needSocketAssignment {
+	if plan.enableTCP && needSocketAssignment {
 		probeMapType(report, "common", KernelProbePerformance, CiliumEBPF.SockMap,
 			"Enables the preferred TCP listener fallback; TC loading falls back to direct socket lookup when unavailable.")
 	}
@@ -339,7 +92,7 @@ func probeCommonCapabilities(report *KernelProbeReport, memlockErr error, enable
 			helpers = append(helpers, helper)
 		}
 	}
-	if needCgroup && enableUDP {
+	if needCgroup && plan.enableUDP {
 		probeProgramHelper(report, "local", KernelProbePerformance, CiliumEBPF.CGroupSockAddr,
 			asm.FnKtimeGetCoarseNs, "bpf_ktime_get_coarse_ns",
 			"Uses coarse monotonic time for the UDP flow-cache expiry fast path when available; the precise helper remains the fallback.")
@@ -364,16 +117,16 @@ func probeCommonCapabilities(report *KernelProbeReport, memlockErr error, enable
 			"bpf_map_update_elem", "Registers socket cookies in the optional cgroup self-bypass tracker.")
 		probeProgramHelper(report, "local", KernelProbePerformance, CiliumEBPF.CGroupSock, asm.FnMapDeleteElem,
 			"bpf_map_delete_elem", "Releases socket cookies in the optional cgroup self-bypass tracker.")
-		if localPlane == KernelProbeDataPlaneCgroup {
+		if plan.localCgroup {
 			probeProgramType(report, "local", KernelProbeRequired, CiliumEBPF.CGroupSockAddr,
 				"Applies local TCP connect and UDP sendmsg interception in the selected cgroup.")
-			for _, helper := range cgroupRequiredHelpers(enableUDP) {
+			for _, helper := range cgroupRequiredHelpers(plan.enableUDP) {
 				probeProgramHelper(report, "local", KernelProbeRequired, CiliumEBPF.CGroupSockAddr,
 					helper.fn, helper.name, helper.detail)
 			}
 		}
 	}
-	if needProcessTracking {
+	if plan.needProcessTracking {
 		probeProgramType(report, "local", KernelProbePerformance, CiliumEBPF.CGroupSockAddr,
 			"Tracks socket ownership at connect and UDP sendmsg for process-aware routing without a procfs descriptor scan.")
 		for _, helper := range []struct {
@@ -389,22 +142,30 @@ func probeCommonCapabilities(report *KernelProbeReport, memlockErr error, enable
 			probeProgramHelper(report, "local", KernelProbePerformance, CiliumEBPF.CGroupSockAddr,
 				helper.fn, helper.name, helper.detail)
 		}
+		probeProgramType(report, "local", KernelProbePerformance, CiliumEBPF.CGroupSock,
+			"Removes socket process ownership at release; the bounded LRU owner map remains the fallback.")
+		probeProgramHelper(report, "local", KernelProbePerformance, CiliumEBPF.CGroupSock,
+			asm.FnGetSocketCookie, "bpf_get_socket_cookie",
+			"Identifies the process-owner entry to remove at socket release.")
+		probeProgramHelper(report, "local", KernelProbePerformance, CiliumEBPF.CGroupSock,
+			asm.FnMapDeleteElem, "bpf_map_delete_elem",
+			"Removes released sockets from the process-owner map.")
 	}
-	if enableTCP && needSocketAssignment {
+	if plan.enableTCP && needSocketAssignment {
 		helpers = append(helpers, struct {
 			fn     asm.BuiltinFunc
 			name   string
 			detail string
 		}{asm.FnSkcLookupTcp, "bpf_skc_lookup_tcp", "Finds transparent TCP listeners and established sockets."})
 	}
-	if enableUDP && needSocketAssignment {
+	if plan.enableUDP && needSocketAssignment {
 		helpers = append(helpers, struct {
 			fn     asm.BuiltinFunc
 			name   string
 			detail string
 		}{asm.FnSkLookupUdp, "bpf_sk_lookup_udp", "Finds the transparent UDP listener."})
 	}
-	if (enableTCP || enableUDP) && needSocketAssignment {
+	if (plan.enableTCP || plan.enableUDP) && needSocketAssignment {
 		helpers = append(helpers, struct {
 			fn     asm.BuiltinFunc
 			name   string
@@ -435,7 +196,7 @@ func probeCommonCapabilities(report *KernelProbeReport, memlockErr error, enable
 			probeProgramHelper(report, scope, KernelProbeRequired, CiliumEBPF.SchedCLS, helper.fn, helper.name, helper.detail)
 		}
 	}
-	probeSocketCapabilities(report, enableIPv6, enableTCP, enableUDP)
+	probeSocketCapabilities(report, plan.enableIPv6, plan.enableTCP, plan.enableUDP)
 	probeNetlinkAccess(report)
 
 	probeMemlockLimit(report, memlockErr)
@@ -598,15 +359,19 @@ func probeSharedCapabilities(report *KernelProbeReport, plane KernelProbeDataPla
 }
 
 // probeFakeIPICMPCapabilities checks the helpers native/fakeip_icmp.bpf.c
-// needs beyond what the TC classifier program type itself already implies:
-// address-swap and Echo-Reply-type checksum fixups, and the same-device
-// bounce back to the requester. Called only when the caller asked for it
+// needs beyond what the selected data planes necessarily probe themselves:
+// per-CPU scratch storage, packet writes, address-swap and Echo-Reply-type
+// checksum fixups, and the same-device bounce back to the requester. Called only when the caller asked for it
 // (KernelProbeOptions.FakeIPICMPReply), which mirrors when prepareTC would
 // actually load this object.
 func probeFakeIPICMPCapabilities(report *KernelProbeReport) {
 	const scope = "fakeip_icmp"
 	report.Add(KernelProbePass, scope, KernelProbeRequired, "fakeip_icmp reply facilities",
-		"Answers FakeIP-destined ICMP Echo Requests in place on the same TC classifiers local/shared interception already attaches; no additional program type or map is required beyond ordinary TC classifier support.")
+		"Answers FakeIP-destined ICMP Echo Requests in place on the same TC classifiers local/shared interception already attaches.")
+	probeMapType(report, scope, KernelProbeRequired, CiliumEBPF.PerCPUArray,
+		"Provides per-CPU packet scratch storage and reply counters.")
+	probeProgramHelper(report, scope, KernelProbeRequired, CiliumEBPF.SchedCLS, asm.FnSkbStoreBytes, "bpf_skb_store_bytes",
+		"Writes the swapped addresses and Echo Reply type into packet data.")
 	probeProgramHelper(report, scope, KernelProbeRequired, CiliumEBPF.SchedCLS, asm.FnL3CsumReplace, "bpf_l3_csum_replace",
 		"Patches the IPv4 header checksum after swapping source and destination for a reply.")
 	probeProgramHelper(report, scope, KernelProbeRequired, CiliumEBPF.SchedCLS, asm.FnL4CsumReplace, "bpf_l4_csum_replace",

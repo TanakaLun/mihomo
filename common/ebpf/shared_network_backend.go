@@ -122,13 +122,6 @@ func PrepareSharedNetwork(cgroupBackend *CgroupBackend, config SharedNetworkConf
 		return nil, E.New("missing shared-network redirect address")
 	}
 	memlockErr := raiseMemlockLimit()
-	if err := checkKernelCapabilities("shared-network", ""); err != nil {
-		if memlockErr != nil {
-			return nil, E.Errors(err, E.Cause(memlockErr, "remove memlock limit"))
-		}
-		return nil, err
-	}
-
 	runtimeState := &sharedNetworkRuntime{
 		maps:                        make(map[string]*CiliumEBPF.Map),
 		programs:                    make([]*CiliumEBPF.Program, sharedNetworkProgramCount),
@@ -160,8 +153,7 @@ func PrepareSharedNetwork(cgroupBackend *CgroupBackend, config SharedNetworkConf
 		cgroupBackend.access.RUnlock()
 	}
 	if err != nil {
-		_ = closePrograms(runtimeState.programs)
-		_ = closeMaps(runtimeState.maps)
+		_ = closeObjectResources(runtimeState.programs, runtimeState.maps)
 		prepareErr := eBPFBackendOperationError(
 			"prepare shared-network programs",
 			verifierErrorStage(err),
@@ -508,8 +500,7 @@ func (b *SharedNetworkBackend) Close() error {
 	}
 	b.control.Enabled = 0
 	_ = b.updateControl()
-	closeErr := closePrograms(b.runtime.programs)
-	closeErr = E.Errors(closeErr, closeMaps(b.runtime.maps))
+	closeErr := closeObjectResources(b.runtime.programs, b.runtime.maps)
 	closeErr = E.Errors(closeErr, b.fakeIPICMP.Close())
 	b.fakeIPICMP = nil
 	b.runtime = nil
