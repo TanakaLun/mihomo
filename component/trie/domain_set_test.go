@@ -1,6 +1,7 @@
 package trie_test
 
 import (
+	"fmt"
 	"runtime"
 	"strconv"
 	"strings"
@@ -61,6 +62,33 @@ func TestDomainSet(t *testing.T) {
 	testDump(t, tree, set)
 }
 
+func TestDomainSetForeach(test *testing.T) {
+	var builder trie.DomainSetBuilder
+	for _, domain := range []string{".example.com", "+.example.org", "example.net"} {
+		assert.NoError(test, builder.Insert(domain))
+	}
+	set := builder.Build()
+	var keys []string
+	set.Foreach(func(key string) bool {
+		keys = append(keys, key)
+		assert.NoError(test, builder.Insert(key))
+		return true
+	})
+	assert.ElementsMatch(test, []string{".example.com", ".example.org", "example.org", "example.net"}, keys)
+	for _, set := range []*trie.DomainSet{set, builder.Build()} {
+		for domain, expected := range map[string]bool{
+			"example.com":     false,
+			"www.example.com": true,
+			"example.org":     true,
+			"www.example.org": true,
+			"example.net":     true,
+			"www.example.net": false,
+		} {
+			assert.Equal(test, expected, set.Has(domain), domain)
+		}
+	}
+}
+
 func TestDomainSetBuilderLifecycle(t *testing.T) {
 	var builder trie.DomainSetBuilder
 	assert.True(t, builder.IsEmpty())
@@ -82,7 +110,7 @@ func TestDomainSetBuilderLifecycle(t *testing.T) {
 		return true
 	})
 	slices.Sort(keys)
-	assert.Equal(t, []string{"+.example.com", "example.com"}, keys)
+	assert.Equal(t, []string{".example.com", "example.com"}, keys)
 
 	assert.NoError(t, builder.Insert("other.example"))
 	set = builder.Build()
@@ -152,6 +180,32 @@ func TestDomainSetWildcard(t *testing.T) {
 	assert.False(t, set.Has("test.qq.com"))
 	assert.False(t, set.Has("test.test.test.qq.com"))
 	testDump(t, tree, set)
+}
+
+func TestDomainSetWildcardShadow(t *testing.T) {
+	tests := []struct {
+		domains  []string
+		match    string
+		notMatch string
+	}{
+		{[]string{"*.example.com", "dead.a.example.com"}, "a.example.com", "b.a.example.com"},
+		{[]string{"*.*.example.com", "dead.*.a.example.com", "dead.b.a.example.com"}, "b.a.example.com", "a.example.com"},
+		{[]string{"*.*.*.example.com", "*.a.example.com"}, "b.c.a.example.com", "d.b.c.a.example.com"},
+	}
+	for _, test := range tests {
+		tree := trie.New[struct{}]()
+		var builder trie.DomainSetBuilder
+		for _, domain := range test.domains {
+			assert.NoError(t, tree.Insert(domain, struct{}{}))
+			assert.NoError(t, builder.Insert(domain))
+		}
+		set := builder.Build()
+		assert.Equal(t, tree.NewDomainSet(), set)
+		assert.NotNil(t, set)
+		assert.True(t, set.Has(test.match), test.match)
+		assert.False(t, set.Has(test.notMatch), test.notMatch)
+		testDump(t, tree, set)
+	}
 }
 
 func TestDomainSetCase(t *testing.T) {
@@ -244,7 +298,15 @@ func BenchmarkDomainSetHas(b *testing.B) {
 	}
 }
 
-func BenchmarkDomainSetBuild(b *testing.B) {
+func domainBenchmarkHash(value uint32) uint32 {
+	value ^= value >> 16
+	value *= 0x7feb352d
+	value ^= value >> 15
+	value *= 0x846ca68b
+	return value ^ (value >> 16)
+}
+
+func domainBuildBenchmarkDomains(count int) []string {
 	suffixes := [...]string{
 		"google.com",
 		"github.io",
@@ -254,26 +316,47 @@ func BenchmarkDomainSetBuild(b *testing.B) {
 		"apple.com",
 		"telegram.org",
 		"example.co.uk",
+		"example.com.au",
+		"example.com.tw",
+		"example.co.jp",
+		"example.de",
 	}
-	domains := make([]string, 10000)
-	for i := range domains {
-		domain := strconv.Itoa(i) + "." + suffixes[i%len(suffixes)]
-		switch i % 20 {
+	hosts := [...]string{
+		"api%d",
+		"cdn%d",
+		"img%d",
+		"static-%d",
+		"region-%d",
+		"production-download-%d",
+		"service%d.edge",
+		"download%d.assets.eu-west-1",
+	}
+	domains := make([]string, count)
+	for index := range domains {
+		hash := domainBenchmarkHash(uint32(index))
+		if index > 0 && hash%50 == 0 {
+			domains[index] = domains[int(uint64(hash>>8)%uint64(index))]
+			continue
+		}
+		domain := fmt.Sprintf(hosts[(hash>>8)%uint32(len(hosts))], index) + "." + suffixes[(hash>>12)%uint32(len(suffixes))]
+		switch (hash >> 24) % 20 {
 		case 0:
-			domains[i] = domain
+			domains[index] = domain
 		case 1:
-			domains[i] = "." + domain
+			domains[index] = "." + domain
 		case 2:
-			domains[i] = "*." + domain
+			domains[index] = "*." + domain
 		case 3:
-			domains[i] = "stun.*." + domain
+			domains[index] = "service.*." + domain
 		default:
-			domains[i] = "+." + domain
-		}
-		if i%50 == 49 {
-			domains[i] = domains[i-1]
+			domains[index] = "+." + domain
 		}
 	}
+	return domains
+}
+
+func BenchmarkDomainSetBuild(b *testing.B) {
+	domains := domainBuildBenchmarkDomains(10000)
 
 	b.Run("via_trie", func(b *testing.B) {
 		b.ReportAllocs()

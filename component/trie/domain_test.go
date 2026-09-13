@@ -199,7 +199,7 @@ func TestTrie_ValidAndSplitDomain(t *testing.T) {
 }
 
 func TestTrie_Foreach(t *testing.T) {
-	tree := trie.New[netip.Addr]()
+	tree := trie.New[int]()
 	domainList := []string{
 		"google.com",
 		"stun.*.*.*",
@@ -207,14 +207,37 @@ func TestTrie_Foreach(t *testing.T) {
 		"+.baidu.com",
 		"*.baidu.com",
 		"*.*.baidu.com",
+		"baidu.com",
+		".example.org",
 	}
-	for _, domain := range domainList {
-		assert.NoError(t, tree.Insert(domain, localIP))
+	for index, domain := range domainList {
+		assert.NoError(t, tree.Insert(domain, index))
 	}
-	count := 0
-	tree.Foreach(func(domain string, data netip.Addr) bool {
-		count++
+	rebuilt := trie.New[int]()
+	values := make(map[string]int)
+	tree.Foreach(func(domain string, data int) bool {
+		assert.NotContains(t, values, domain)
+		values[domain] = data
+		assert.NoError(t, rebuilt.Insert(domain, data))
 		return true
 	})
-	assert.Equal(t, 7, count)
+	assert.Equal(t, map[string]int{
+		"google.com":        0,
+		"stun.*.*.*":        1,
+		"test.*.google.com": 2,
+		".baidu.com":        3,
+		"*.baidu.com":       4,
+		"*.*.baidu.com":     5,
+		"baidu.com":         6,
+		".example.org":      7,
+	}, values)
+	for _, tree := range []*trie.DomainTrie[int]{tree, rebuilt} {
+		for domain, expected := range map[string]int{"google.com": 0, "baidu.com": 6, "a.b.c.baidu.com": 3, "www.example.org": 7} {
+			node := tree.Search(domain)
+			if assert.NotNil(t, node, domain) {
+				assert.Equal(t, expected, node.Data(), domain)
+			}
+		}
+		assert.Nil(t, tree.Search("example.org"))
+	}
 }

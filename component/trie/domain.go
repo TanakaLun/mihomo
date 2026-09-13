@@ -175,6 +175,11 @@ func (t *DomainTrie[T]) Optimize() {
 	t.root.optimize()
 }
 
+// Foreach iterates over the stored domain patterns and their associated values
+// in unspecified order. Patterns use lowercase labels, "*" for a single-label
+// wildcard, and a leading "." for subdomain-only matching. Exact and suffix-only
+// patterns are separate entries; "+." shorthand is not emitted. Each pattern
+// and its value can be passed to Insert independently to reproduce the mappings.
 func (t *DomainTrie[T]) Foreach(fn func(domain string, data T) bool) {
 	for key, data := range t.root.getChildren() {
 		recursion([]string{key}, data, fn)
@@ -198,9 +203,6 @@ func recursion[T any](items []string, node *Node[T], fn func(domain string, data
 		newItems := append([]string{key}, items...)
 		if !data.isEmpty() {
 			domain := joinDomain(newItems)
-			if domain[0] == domainStepByte {
-				domain = complexWildcard + domain
-			}
 			if !fn(domain, data.Data()) {
 				return false
 			}
