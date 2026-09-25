@@ -1,10 +1,10 @@
 module github.com/metacubex/mihomo
 
-go 1.25.0
+go 1.25.5
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0
-	github.com/cilium/ebpf v0.22.1-0.20260724091036-00feb08ae4e5
+	github.com/cilium/ebpf v0.22.1-0.20260910105759-60e81073fdc6
 	github.com/coreos/go-iptables v0.8.0
 	github.com/dlclark/regexp2 v1.12.0
 	github.com/easytier/easytier/easytier-go v0.0.0-20260910071355-3d0c9c3ca5e2
@@ -54,7 +54,7 @@ require (
 	github.com/mroth/weightedrand/v2 v2.1.0
 	github.com/openacid/low v0.1.21
 	github.com/rasky/go-lzo v0.0.0-20200203143853-96a758eda86e
-	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a
+	github.com/sagernet/netlink v0.0.0-20260814022025-64455d367bbf
 	github.com/samber/lo v1.53.0
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.12.1
@@ -66,6 +66,8 @@ require (
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb
 )
 
+require github.com/sagernet/sing v0.9.6-0.20260922013359-4ca3bebe0b8e // indirect
+
 // lastest version compatible with golang1.20
 require (
 	github.com/insomniacslk/dhcp v0.0.0-20250109001534-8abf58130905
@@ -73,15 +75,16 @@ require (
 	github.com/mdlayher/netlink v1.7.2
 	github.com/miekg/dns v1.1.63
 	github.com/oschwald/maxminddb-golang v1.12.0
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.54.0
 	golang.org/x/exp v0.0.0-20240904232852-e7e105dedf7e
-	golang.org/x/net v0.55.0
-	golang.org/x/sync v0.20.0
-	golang.org/x/sys v0.45.0
+	golang.org/x/net v0.57.0
+	golang.org/x/sync v0.22.0
+	golang.org/x/sys v0.47.0
 	google.golang.org/protobuf v1.34.2
 )
 
 require (
+	github.com/CHIZI-0618/sing-ebpf v0.1.0-alpha.10.0.20260925091429-c3e95b329d35
 	github.com/RyuaNerin/go-krypto v1.3.0 // indirect
 	github.com/Yawning/aez v0.0.0-20211027044916-e49e68abd344 // indirect
 	github.com/ajg/form v1.7.1 // indirect
@@ -141,11 +144,11 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	gitlab.com/yawning/bsaes.git v0.0.0-20190805113838-0a714cd429ec // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
-	golang.org/x/mod v0.35.0 // indirect
-	golang.org/x/term v0.43.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/mod v0.37.0 // indirect
+	golang.org/x/term v0.45.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.10.0 // indirect
-	golang.org/x/tools v0.44.0 // indirect
+	golang.org/x/tools v0.47.0 // indirect
 )
 
 // for https://github.com/golang/protobuf/issues/1704

@@ -178,21 +178,16 @@ windows-arm64:
 windows-arm32v7:
 	GOARCH=arm GOOS=windows GOARM=7 $(GOBUILD) -o $(BINDIR)/$(NAME)-$@.exe
 
-# eBPF inbound builds require cgo, the with_ebpf build tag, and the generated
-# TC object (native/shared_network.bpf.o, compiled with clang -target bpfel).
+# eBPF inbound builds use the sing-ebpf dependency (github.com/CHIZI-0618/sing-ebpf).
+# The BPF objects ship pre-generated in the dependency; no local clang step is
+# required. The backend is pure Go, so CGO_ENABLED=0 yields a static binary.
 EBPF_TAGS=with_gvisor with_ebpf
 
-ebpf_generate:
-	$(MAKE) -C common/ebpf generate
+linux-amd64-ebpf:
+	CGO_ENABLED=0 GOARCH=amd64 GOOS=linux GOAMD64=v3 go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
 
-ebpf_check:
-	$(MAKE) -C common/ebpf check
-
-linux-amd64-ebpf: ebpf_generate
-	CGO_ENABLED=1 GOARCH=amd64 GOOS=linux GOAMD64=v3 go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
-
-linux-arm64-ebpf: ebpf_generate
-	CGO_ENABLED=1 GOARCH=arm64 GOOS=linux go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
+linux-arm64-ebpf:
+	CGO_ENABLED=0 GOARCH=arm64 GOOS=linux go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@
 
 android-arm64-ebpf: ebpf_generate
 	CGO_ENABLED=1 GOARCH=arm64 GOOS=android go build -tags "$(EBPF_TAGS)" -trimpath -ldflags '-X "github.com/metacubex/mihomo/constant.Version=$(VERSION)" -X "github.com/metacubex/mihomo/constant.BuildTime=$(BUILDTIME)" -w -s -buildid=' -o $(BINDIR)/$(NAME)-$@

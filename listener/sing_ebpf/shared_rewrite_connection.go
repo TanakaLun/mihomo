@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
-	ECommon "github.com/metacubex/mihomo/common/ebpf"
+	ECommon "github.com/CHIZI-0618/sing-ebpf"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
@@ -67,7 +67,7 @@ func (s *sharedRewrite) NewConnection(conn net.Conn) {
 type sharedRewriteConn struct {
 	net.Conn
 	shared *sharedRewrite
-	flow   *ECommon.SharedNetworkFlowHandle
+	flow   *ECommon.SharedPacketRewriteFlowHandle
 	once   sync.Once
 }
 
@@ -117,7 +117,7 @@ func (s *sharedRewrite) NewPacket(data []byte, oob []byte, source netip.AddrPort
 	s.forwardSharedUDP(data, client, original.Destination, flow)
 }
 
-func (s *sharedRewrite) forwardSharedUDP(data []byte, client netip.AddrPort, destination netip.AddrPort, flow *ECommon.SharedNetworkFlowHandle) {
+func (s *sharedRewrite) forwardSharedUDP(data []byte, client netip.AddrPort, destination netip.AddrPort, flow *ECommon.SharedPacketRewriteFlowHandle) {
 	metadata := &C.Metadata{
 		NetWork: C.UDP,
 		Type:    C.EBPF,
@@ -138,7 +138,7 @@ func (s *sharedRewrite) forwardSharedUDP(data []byte, client netip.AddrPort, des
 	s.inbound.tunnel.HandleUDPPacket(packet, metadata)
 }
 
-func (s *sharedRewrite) relayTCPDNS(conn net.Conn, flow *ECommon.SharedNetworkFlowHandle) {
+func (s *sharedRewrite) relayTCPDNS(conn net.Conn, flow *ECommon.SharedPacketRewriteFlowHandle) {
 	wrapped := &sharedRewriteConn{Conn: conn, shared: s, flow: flow}
 	if err := resolver.RelayDnsConn(context.Background(), wrapped, resolver.DefaultDnsReadTimeout); err != nil {
 		s.udpWarnings.cleanup.warn(s.inbound.logWarn, "relay hijacked shared TCP DNS: ", err)
@@ -151,7 +151,7 @@ func (s *sharedRewrite) releaseFlows(releases []sharedUDPRedirectRelease) {
 	}
 }
 
-func (s *sharedRewrite) releaseFlow(flow *ECommon.SharedNetworkFlowHandle) {
+func (s *sharedRewrite) releaseFlow(flow *ECommon.SharedPacketRewriteFlowHandle) {
 	if flow == nil {
 		return
 	}

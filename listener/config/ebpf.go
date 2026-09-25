@@ -17,7 +17,7 @@ type EBPF struct {
 }
 
 type EBPFLocal struct {
-	Enabled              *bool    `json:"enabled" yaml:"enabled" inbound:"enabled,omitempty"`
+	Enable               *bool    `json:"enable" yaml:"enable" inbound:"enable,omitempty"`
 	DataPlane            string   `json:"data-plane" yaml:"data-plane" inbound:"data-plane,omitempty"`
 	CgroupPath           string   `json:"cgroup-path" yaml:"cgroup-path" inbound:"cgroup-path,omitempty"`
 	DNSMode              string   `json:"dns-mode" yaml:"dns-mode" inbound:"dns-mode,omitempty"`
@@ -35,7 +35,7 @@ type EBPFLocal struct {
 }
 
 type EBPFShared struct {
-	Enabled              *bool          `json:"enabled" yaml:"enabled" inbound:"enabled,omitempty"`
+	Enable               *bool          `json:"enable" yaml:"enable" inbound:"enable,omitempty"`
 	DataPlane            string         `json:"data-plane" yaml:"data-plane" inbound:"data-plane,omitempty"`
 	DNSMode              string         `json:"dns-mode" yaml:"dns-mode" inbound:"dns-mode,omitempty"`
 	Interface            []string       `json:"interface" yaml:"interface" inbound:"interface,omitempty"`

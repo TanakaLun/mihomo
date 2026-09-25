@@ -573,19 +573,16 @@ func (i *Inbound) updateTCInterfaces(ctx context.Context) (outcome tcUpdateOutco
 			}
 		}
 	}
-	sharedDataPlane := (*sharedRewriteDataPlane)(nil)
-	if shared := i.sharedRewriteInstance(); shared != nil {
-		sharedDataPlane = shared.dataPlaneInstance()
-	}
+	sharedDataPlane := i.sharedRewriteDataPlane()
 	if sharedDataPlane != nil {
-		previous := sharedDataPlane.attachmentDescriptions()
-		if err = sharedDataPlane.reconcile(sharedInterfaces, hostAddresses); err != nil {
+		previous := sharedDataPlane.AttachmentDescriptions()
+		if err = sharedDataPlane.Reconcile(sharedInterfaces, hostAddresses); err != nil {
 			i.counters.sharedReconcileFailures.Add(1)
 			i.interfaceWarnings.reconcile.warn(i.logWarn, "refresh shared packet-rewrite interfaces: ", err)
-			outcome.sharedRewrite = sharedDataPlane.retryOutcome()
+			outcome.sharedRewrite = i.sharedRewriteRetryOutcome()
 		} else {
 			outcome.sharedRewrite = tcSharedRewriteSettled
-			if attachments := sharedDataPlane.attachmentDescriptions(); !slices.Equal(previous, attachments) {
+			if attachments := sharedDataPlane.AttachmentDescriptions(); !slices.Equal(previous, attachments) {
 				log.Debugln("eBPF shared packet-rewrite attachments updated: attachments=[%s]", strings.Join(attachments, ", "))
 			}
 		}

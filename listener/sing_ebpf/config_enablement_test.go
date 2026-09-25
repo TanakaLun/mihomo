@@ -3,6 +3,7 @@
 package sing_ebpf
 
 import (
+	"encoding/json"
 	"testing"
 
 	LC "github.com/metacubex/mihomo/listener/config"
@@ -24,29 +25,29 @@ func TestEnablementModeLocal(t *testing.T) {
 	}
 }
 
-func TestEnablementLocalEnabledField(t *testing.T) {
-	// local.enabled: true, no shared -> local only
+func TestEnablementLocalEnableField(t *testing.T) {
+	// local.enable: true, no shared -> local only
 	sel, err := normalizeDataPlanes(LC.EBPF{
-		Local: LC.EBPFLocal{Enabled: boolPtr(true)},
+		Local: LC.EBPFLocal{Enable: boolPtr(true)},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !sel.localEnabled || sel.sharedEnabled {
-		t.Fatalf("local.enabled=true: local=%v shared=%v", sel.localEnabled, sel.sharedEnabled)
+		t.Fatalf("local.enable=true: local=%v shared=%v", sel.localEnabled, sel.sharedEnabled)
 	}
 }
 
-func TestEnablementSharedEnabledField(t *testing.T) {
-	// shared.enabled: true + interface -> shared only (no local)
+func TestEnablementSharedEnableField(t *testing.T) {
+	// shared.enable: true + interface -> shared only (no local)
 	sel, err := normalizeDataPlanes(LC.EBPF{
-		Shared: LC.EBPFShared{Enabled: boolPtr(true), Interface: []string{"wlan2"}},
+		Shared: LC.EBPFShared{Enable: boolPtr(true), Interface: []string{"wlan2"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sel.localEnabled || !sel.sharedEnabled {
-		t.Fatalf("shared.enabled=true: local=%v shared=%v", sel.localEnabled, sel.sharedEnabled)
+		t.Fatalf("shared.enable=true: local=%v shared=%v", sel.localEnabled, sel.sharedEnabled)
 	}
 	if sel.sharedDataPlane != sharedDataPlanePacketRewrite {
 		t.Fatalf("shared default data plane = %q", sel.sharedDataPlane)
@@ -66,5 +67,40 @@ func TestValidateSharedDisabledWithIPv6(t *testing.T) {
 	shared := LC.EBPFShared{IPv6: boolPtr(true)}
 	if err := validateSharedOptions(false, shared); err == nil {
 		t.Fatal("shared.ipv6 with shared disabled should error")
+	}
+}
+
+func TestEnableJSONTag(t *testing.T) {
+	cases := []struct {
+		name  string
+		json  string
+		check func(e LC.EBPF) bool
+	}{
+		{
+			"local enable true",
+			`{"local":{"enable":true}}`,
+			func(e LC.EBPF) bool { return e.Local.Enable != nil && *e.Local.Enable },
+		},
+		{
+			"shared enable true",
+			`{"shared":{"enable":true}}`,
+			func(e LC.EBPF) bool { return e.Shared.Enable != nil && *e.Shared.Enable },
+		},
+		{
+			"shared enable false with data-plane",
+			`{"shared":{"enable":false,"interface":["wlan2"]}}`,
+			func(e LC.EBPF) bool { return e.Shared.Enable != nil && !*e.Shared.Enable },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var e LC.EBPF
+			if err := json.Unmarshal([]byte(tc.json), &e); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.check(e) {
+				t.Fatalf("parse failed: %+v", e)
+			}
+		})
 	}
 }

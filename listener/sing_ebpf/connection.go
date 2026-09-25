@@ -10,7 +10,7 @@ import (
 	"syscall"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
-	ECommon "github.com/metacubex/mihomo/common/ebpf"
+	ECommon "github.com/CHIZI-0618/sing-ebpf"
 	N "github.com/metacubex/mihomo/common/net"
 	C "github.com/metacubex/mihomo/constant"
 

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/metacubex/mihomo/common/ebpf"
+	commonEBPF "github.com/CHIZI-0618/sing-ebpf"
 	"github.com/metacubex/mihomo/component/dialer"
 
 	E "github.com/metacubex/sing/common/exceptions"
@@ -155,7 +155,7 @@ func (s *internalListenerSet) selectedPort() uint16 {
 // registerTCTCPListeners publishes the internal TCP listening sockets to the
 // TC backend so the kernel TC programs can steer assigned client flows into
 // them (ipv6=false = IPv4, ipv6=true = IPv6).
-func (s *internalListenerSet) registerTCTCPListeners(backend *ebpf.TCBackend) error {
+func (s *internalListenerSet) registerTCTCPListeners(backend *commonEBPF.TCBackend) error {
 	s.access.Lock()
 	defer s.access.Unlock()
 	for _, registration := range []struct {

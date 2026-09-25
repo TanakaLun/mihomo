@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	ECommon "github.com/metacubex/mihomo/common/ebpf"
+	ECommon "github.com/CHIZI-0618/sing-ebpf"
 )
 
 type sharedUDPClientTable struct {
@@ -40,7 +40,7 @@ type sharedUDPRedirectBinding struct {
 	packetInfo []byte
 	connected  bool
 	reference  sharedUDPRedirectReference
-	sharedFlow *ECommon.SharedNetworkFlowHandle
+	sharedFlow *ECommon.SharedPacketRewriteFlowHandle
 	replyAlias bool
 }
 
@@ -51,12 +51,12 @@ type sharedUDPRedirectReference struct {
 
 type sharedUDPRedirectRelease struct {
 	reference  sharedUDPRedirectReference
-	sharedFlow *ECommon.SharedNetworkFlowHandle
+	sharedFlow *ECommon.SharedPacketRewriteFlowHandle
 }
 
 type sharedUDPOriginalDestination struct {
 	original   ECommon.OriginalDestination
-	sharedFlow *ECommon.SharedNetworkFlowHandle
+	sharedFlow *ECommon.SharedPacketRewriteFlowHandle
 	replyAlias bool
 }
 
@@ -161,7 +161,7 @@ func (t *sharedUDPClientTable) setSharedBinding(
 	client netip.AddrPort,
 	original ECommon.OriginalDestination,
 	redirectAddress netip.Addr,
-	flow *ECommon.SharedNetworkFlowHandle,
+	flow *ECommon.SharedPacketRewriteFlowHandle,
 ) ([]sharedUDPRedirectRelease, bool) {
 	return t.setBindingState(
 		client,
@@ -202,7 +202,7 @@ func (t *sharedUDPClientTable) setSharedReplyBinding(
 	expectedState *sharedUDPClientState,
 	original ECommon.OriginalDestination,
 	redirectAddress netip.Addr,
-	flow *ECommon.SharedNetworkFlowHandle,
+	flow *ECommon.SharedPacketRewriteFlowHandle,
 ) ([]sharedUDPRedirectRelease, bool) {
 	return t.setExistingBindingState(
 		client,

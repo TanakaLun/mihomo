@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
-	ECommon "github.com/metacubex/mihomo/common/ebpf"
+	ECommon "github.com/CHIZI-0618/sing-ebpf"
 	N "github.com/metacubex/mihomo/common/net"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
@@ -37,13 +37,13 @@ const (
 type sharedRewrite struct {
 	inbound              *Inbound
 	interfaces           []string
-	sharedBackend        *ECommon.SharedNetworkBackend
-	dataPlane            *sharedRewriteDataPlane
+	sharedBackend        *ECommon.SharedPacketRewriteBackend
+	dataPlane            sharedKernelRuntime
 	listeners            internalListenerSet
 	sharedUDPClientTable sharedUDPClientTable
 	udpWarnings          udpWarningLimiters
 	tcpWarnings          warningLimiter
-	mapCapacity          ECommon.SharedNetworkMapCapacities
+	mapCapacity          ECommon.SharedPacketRewriteMapCapacity
 	janitorWarnings      warningLimiter
 	janitorAccess        sync.Mutex
 	janitorCancel        context.CancelFunc
@@ -55,7 +55,7 @@ type sharedRewrite struct {
 
 func newSharedRewrite(inbound *Inbound, options LC.EBPFShared) *sharedRewrite {
 	mapCapacity := effectiveSharedNetworkMapCapacity(
-		ECommon.DefaultSharedNetworkMapCapacities(),
+		ECommon.DefaultSharedPacketRewriteMapCapacity(),
 		len(inbound.bypassRuleSet) > 0 ||
 			len(options.IncludeSourceCIDR) > 0 || len(options.ExcludeSourceCIDR) > 0 ||
 			len(options.IncludeMACAddress) > 0 || len(options.ExcludeMACAddress) > 0,
@@ -69,9 +69,9 @@ func newSharedRewrite(inbound *Inbound, options LC.EBPFShared) *sharedRewrite {
 }
 
 func effectiveSharedNetworkMapCapacity(
-	capacity ECommon.SharedNetworkMapCapacities,
+	capacity ECommon.SharedPacketRewriteMapCapacity,
 	bypassFlowCache bool,
-) ECommon.SharedNetworkMapCapacities {
+) ECommon.SharedPacketRewriteMapCapacity {
 	if !bypassFlowCache {
 		capacity.Bypass = 1
 	}
@@ -82,8 +82,8 @@ func (s *sharedRewrite) Start(interfaceNames []string, hostAddresses []netip.Add
 	if err := s.startListeners(); err != nil {
 		return E.Errors(err, s.closeListeners())
 	}
-	s.dataPlane = newSharedRewriteDataPlane(s, s.tcPriority)
-	if err := s.dataPlane.reconcile(interfaceNames, hostAddresses); err != nil {
+	s.dataPlane = newSharedKernelRuntime(s.kernelRuntimeHooks(), s.tcPriority)
+	if err := s.dataPlane.Reconcile(interfaceNames, hostAddresses); err != nil {
 		return E.Errors(err, s.Close())
 	}
 	if s.sharedBackendInstance() == nil {
@@ -93,39 +93,49 @@ func (s *sharedRewrite) Start(interfaceNames []string, hostAddresses []netip.Add
 	return nil
 }
 
-func (s *sharedRewrite) prepareBackend() (*ECommon.SharedNetworkBackend, error) {
+func (s *sharedRewrite) kernelRuntimeHooks() sharedKernelRuntimeHooks {
+	return sharedKernelRuntimeHooks{
+		PrepareBackend:     s.prepareBackend,
+		PurgeUserspaceFlow: s.purgeUDP,
+		Ready:              s.sharedRewriteReadyLocked,
+		WarnFlowPurge: func(interfaceName string, err error) {
+			s.janitorWarnings.warn(s.inbound.logWarn, "purge shared packet-rewrite state for ", interfaceName, ": ", err)
+		},
+	}
+}
+
+func (s *sharedRewrite) prepareBackend() (*ECommon.SharedPacketRewriteBackend, error) {
 	redirectIPv6 := netip.Prefix{}
 	if s.inbound.sharedRewriteIPv6Enabled() {
 		redirectIPv6 = s.inbound.redirectIPv6Prefix
 	}
 	cgroupBackend := s.inbound.cgroupBackendInstance()
-	backend, err := ECommon.PrepareSharedNetwork(cgroupBackend, ECommon.SharedNetworkConfig{
-		ListenerPort: s.listeners.selectedPort(),
-		EnableTCP:    s.inbound.enableTCP,
-		EnableUDP:    s.inbound.enableUDP,
-		RedirectIPv4: s.inbound.redirectIPv4Prefix,
-		RedirectIPv6: redirectIPv6,
-		Policy:       s.inbound.compiledPolicy,
-		MapCapacity:  s.mapCapacity,
-		UDPTimeout:   s.inbound.udpTimeout,
+	backend, err := ECommon.PrepareSharedPacketRewrite(cgroupBackend, ECommon.SharedPacketRewriteConfig{
+		ListenerPort:  s.listeners.selectedPort(),
+		EnableTCP:     s.inbound.enableTCP,
+		EnableUDP:     s.inbound.enableUDP,
+		RedirectIPv4:  s.inbound.redirectIPv4Prefix,
+		RedirectIPv6:  redirectIPv6,
+		Policy:        s.inbound.compiledPolicy,
+		MapCapacity:   s.mapCapacity,
+		UDPTimeout:    s.inbound.udpTimeout,
 	})
 	if err != nil {
 		return nil, err
 	}
 	s.inbound.bypassRuleSetAccess.Lock()
-	if cgroupBackend != nil {
-		ipv4Count, ipv6Count := cgroupBackend.BypassCIDRCount()
-		err = backend.SetBypassCIDRState(ipv4Count, ipv6Count)
-	} else {
-		_, err = backend.UpdateCompiledBypassCIDR(s.inbound.bypassRuleSetPolicy)
+	if len(s.inbound.bypassCIDR) > 0 {
+		decisions := make([]ECommon.CIDRDecision, 0, len(s.inbound.bypassCIDR))
+		for _, prefix := range s.inbound.bypassCIDR {
+			decisions = append(decisions, ECommon.CIDRDecision{Prefix: prefix, Action: ECommon.DecisionPass})
+		}
+		if _, err = backend.UpdateDestinationDecisions(decisions); err != nil {
+			s.inbound.bypassRuleSetAccess.Unlock()
+			return nil, E.Errors(err, backend.Close())
+		}
 	}
-	if err == nil {
-		s.setSharedBackend(backend)
-	}
+	s.setSharedBackend(backend)
 	s.inbound.bypassRuleSetAccess.Unlock()
-	if err != nil {
-		return nil, E.Errors(err, backend.Close())
-	}
 	return backend, nil
 }
 
@@ -198,13 +208,13 @@ func (s *sharedRewrite) IsClosed() bool {
 	return s.dataPlane == nil && s.sharedBackendInstance() == nil && s.listeners.isClosed()
 }
 
-func (s *sharedRewrite) sharedBackendInstance() *ECommon.SharedNetworkBackend {
+func (s *sharedRewrite) sharedBackendInstance() *ECommon.SharedPacketRewriteBackend {
 	s.backendAccess.RLock()
 	defer s.backendAccess.RUnlock()
 	return s.sharedBackend
 }
 
-func (s *sharedRewrite) takeSharedBackend() *ECommon.SharedNetworkBackend {
+func (s *sharedRewrite) takeSharedBackend() *ECommon.SharedPacketRewriteBackend {
 	s.backendAccess.Lock()
 	backend := s.sharedBackend
 	s.sharedBackend = nil
@@ -212,7 +222,7 @@ func (s *sharedRewrite) takeSharedBackend() *ECommon.SharedNetworkBackend {
 	return backend
 }
 
-func (s *sharedRewrite) setSharedBackend(backend *ECommon.SharedNetworkBackend) {
+func (s *sharedRewrite) setSharedBackend(backend *ECommon.SharedPacketRewriteBackend) {
 	s.backendAccess.Lock()
 	s.sharedBackend = backend
 	s.backendAccess.Unlock()
@@ -292,7 +302,7 @@ func (s *sharedRewrite) runFlowJanitor(ctx context.Context, done chan<- struct{}
 	}
 	var releaseTimer *time.Timer
 	var releaseTimerChannel <-chan time.Time
-	resetReleaseTimer := func(backend *ECommon.SharedNetworkBackend) {
+	resetReleaseTimer := func(backend *ECommon.SharedPacketRewriteBackend) {
 		delay, available := backend.NextTCPFlowReleaseDelay(time.Now())
 		if !available {
 			if releaseTimer != nil {
@@ -327,7 +337,7 @@ func (s *sharedRewrite) runFlowJanitor(ctx context.Context, done chan<- struct{}
 	belowExitRounds := 0
 	var lastReservationFailures uint64
 	scanInProgress := false
-	attachmentActive := s.dataPlane != nil && s.dataPlane.isEnabled()
+	attachmentActive := s.dataPlane != nil && s.dataPlane.IsEnabled()
 	resetSweepTimer := func() {
 		if !sweepTimer.Stop() {
 			select {
@@ -374,7 +384,7 @@ func (s *sharedRewrite) runFlowJanitor(ctx context.Context, done chan<- struct{}
 			resetReleaseTimer(backend)
 			continue
 		}
-		if s.dataPlane == nil || !s.dataPlane.isEnabled() {
+		if s.dataPlane == nil || !s.dataPlane.IsEnabled() {
 			attachmentActive = false
 			pressure = false
 			knownPressure = false

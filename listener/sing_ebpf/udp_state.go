@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	commonEBPF "github.com/metacubex/mihomo/common/ebpf"
+	commonEBPF "github.com/CHIZI-0618/sing-ebpf"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"

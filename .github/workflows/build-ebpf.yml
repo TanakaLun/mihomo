@@ -45,7 +45,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -count=1 -tags "with_gvisor with_ebpf" ./common/ebpf/... ./listener/sing_ebpf/...
+          go test -count=1 -tags "with_gvisor with_ebpf" ./listener/sing_ebpf/...
 
   build:
     needs:
@@ -117,7 +117,7 @@ jobs:
             build/*
           if-no-files-found: error
 
-  privileged-integration:
+  eBPF-smoke:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -127,43 +127,11 @@ jobs:
           go-download-base-url: "https://github.com/MetaCubeX/go/releases/download/build"
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Install BPF build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang libc6-dev linux-libc-dev
-
-      - name: Probe eBPF capabilities
-        id: probe
-        shell: bash
-        run: |
-          set +e
-          sudo apt-get install -y bpftool >/dev/null 2>&1 || true
-          bash common/ebpf/check-kernel.sh --mode local > /tmp/ebpf-probe.log 2>&1
-          probe_status=$?
-          set -e
-          cat /tmp/ebpf-probe.log
-          if [ "${probe_status}" -ne 0 ] || grep -Eq '^(FAIL|UNKNOWN) .*\[required' /tmp/ebpf-probe.log; then
-            echo "SKIP: runner cannot prove the required eBPF capabilities"
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skipped=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Run privileged eBPF integration tests
-        if: steps.probe.outputs.skipped == 'false'
-        shell: bash
+      - name: Build eBPF adapter
         run: |
           set -euo pipefail
           go mod download
-          sudo -E env SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=0 GOCACHE=/tmp/gocache go test -count=1 -tags "with_gvisor with_ebpf ebpf_integration" ./common/ebpf/... -run 'Integration'
-
-      - name: Copy probe log
-        run: cp /tmp/ebpf-probe.log ebpf-probe.log
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ebpf-privileged-probe
-          path: ebpf-probe.log
+          CGO_ENABLED=0 go build -tags "with_gvisor with_ebpf" -trimpath -o /dev/null ./listener/sing_ebpf/...
 
   cross-platform:
     runs-on: ubuntu-latest

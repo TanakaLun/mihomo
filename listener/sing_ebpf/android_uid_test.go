@@ -5,7 +5,6 @@ package sing_ebpf
 import (
 	"testing"
 
-	ECommon "github.com/metacubex/mihomo/common/ebpf"
 	LC "github.com/metacubex/mihomo/listener/config"
 
 	tun "github.com/metacubex/sing-tun"
@@ -47,9 +46,9 @@ func TestResolveAndroidUIDRanges(t *testing.T) {
 			10003: {"com.example.exclude"},
 		},
 	}
-	policy := ECommon.LocalPolicy{
-		IncludeUID: []ECommon.UIDRange{{Start: 2000, End: 2000}},
-		ExcludeUID: []ECommon.UIDRange{{Start: 3000, End: 3000}},
+	policy := localUIDPolicy{
+		IncludeUID: []UIDRange{{Start: 2000, End: 2000}},
+		ExcludeUID: []UIDRange{{Start: 3000, End: 3000}},
 	}
 	options := &androidUIDOptions{
 		includeAndroidUser: []int{0, 10},
@@ -74,7 +73,7 @@ func TestResolveAndroidUIDRanges(t *testing.T) {
 	}
 }
 
-func uidInRanges(uid uint32, uidRanges []ECommon.UIDRange) bool {
+func uidInRanges(uid uint32, uidRanges []UIDRange) bool {
 	for _, uidRange := range uidRanges {
 		if uid >= uidRange.Start && uid <= uidRange.End {
 			return true

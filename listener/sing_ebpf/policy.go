@@ -5,7 +5,7 @@ package sing_ebpf
 import (
 	"net/netip"
 
-	ECommon "github.com/metacubex/mihomo/common/ebpf"
+	ECommon "github.com/CHIZI-0618/sing-ebpf"
 	"github.com/metacubex/mihomo/component/resolver"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
@@ -88,30 +88,29 @@ func (i *Inbound) refreshBypassCIDRsLocked() error {
 	if conflicts := i.fakeIPBypassConflictCount(prefixes); conflicts > 0 {
 		log.Warnln("[EBPF] FakeIP force interception overrides bypass_rule_set CIDRs: overlaps=%d", conflicts)
 	}
-	policy, err := ECommon.CompileBypassCIDRPolicy(prefixes)
-	if err != nil {
-		return err
+	i.bypassCIDR = prefixes
+	decisions := make([]ECommon.CIDRDecision, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		decisions = append(decisions, ECommon.CIDRDecision{Prefix: prefix, Action: ECommon.DecisionPass})
 	}
-	i.bypassRuleSetPolicy = policy
-	i.bypassCIDR = policy.Prefixes()
 	if backend := i.tcBackend(); backend != nil {
-		if _, err = backend.UpdateCompiledBypassCIDR(policy); err != nil {
+		if _, err := backend.UpdateLocalDestinationDecisions(decisions); err != nil {
 			return err
+		}
+		if i.sharedSocketAssignEnabled() {
+			if _, err := backend.UpdateSharedDestinationDecisions(decisions); err != nil {
+				return err
+			}
 		}
 	}
 	if backend := i.cgroupBackendInstance(); backend != nil {
-		if _, err = backend.UpdateCompiledBypassCIDR(policy); err != nil {
+		if _, err := backend.UpdateDestinationDecisions(decisions); err != nil {
 			return err
 		}
 	}
 	if i.sharedRewrite != nil {
 		if backend := i.sharedRewrite.sharedBackendInstance(); backend != nil {
-			if cgroupBackend := i.cgroupBackendInstance(); cgroupBackend != nil {
-				ipv4Count, ipv6Count := cgroupBackend.BypassCIDRCount()
-				if err = backend.SetBypassCIDRState(ipv4Count, ipv6Count); err != nil {
-					return err
-				}
-			} else if _, err = backend.UpdateCompiledBypassCIDR(policy); err != nil {
+			if _, err := backend.UpdateDestinationDecisions(decisions); err != nil {
 				return err
 			}
 		}

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	ECommon "github.com/metacubex/mihomo/common/ebpf"
+	ECommon "github.com/CHIZI-0618/sing-ebpf"
 	LC "github.com/metacubex/mihomo/listener/config"
 
 	E "github.com/metacubex/sing/common/exceptions"
@@ -98,17 +98,6 @@ func normalizeDNSMode(mode string) (string, error) {
 	}
 }
 
-func toCommonDNSMode(mode string) ECommon.DNSMode {
-	switch mode {
-	case dnsModeRespectPolicy, dnsModeRespectBypass:
-		return ECommon.DNSModeRespectPolicy
-	case dnsModeOff:
-		return ECommon.DNSModeOff
-	default:
-		return ECommon.DNSModeHijack
-	}
-}
-
 func enabledByDefault(value *bool) bool {
 	return value == nil || *value
 }
@@ -156,10 +145,10 @@ func hasAndroidUIDOptions(options LC.EBPFLocal) bool {
 		len(options.ExcludePackage) > 0
 }
 
-func parseUIDRanges(includeUID []uint32, includeUIDRange []string) ([]ECommon.UIDRange, error) {
-	uidRanges := make([]ECommon.UIDRange, 0, len(includeUID)+len(includeUIDRange))
+func parseUIDRanges(includeUID []uint32, includeUIDRange []string) ([]UIDRange, error) {
+	uidRanges := make([]UIDRange, 0, len(includeUID)+len(includeUIDRange))
 	for _, uid := range includeUID {
-		uidRanges = append(uidRanges, ECommon.UIDRange{Start: uid, End: uid})
+		uidRanges = append(uidRanges, UIDRange{Start: uid, End: uid})
 	}
 	for _, text := range includeUIDRange {
 		start, end, found := strings.Cut(text, ":")
@@ -168,7 +157,7 @@ func parseUIDRanges(includeUID []uint32, includeUIDRange []string) ([]ECommon.UI
 			if err != nil {
 				return nil, E.New("invalid UID range: ", text)
 			}
-			uidRanges = append(uidRanges, ECommon.UIDRange{Start: parsed, End: parsed})
+			uidRanges = append(uidRanges, UIDRange{Start: parsed, End: parsed})
 			continue
 		}
 		startValue, err := parseUint32(start)
@@ -182,7 +171,7 @@ func parseUIDRanges(includeUID []uint32, includeUIDRange []string) ([]ECommon.UI
 		if startValue > endValue {
 			return nil, E.New("invalid UID range: ", text)
 		}
-		uidRanges = append(uidRanges, ECommon.UIDRange{Start: startValue, End: endValue})
+		uidRanges = append(uidRanges, UIDRange{Start: startValue, End: endValue})
 	}
 	return uidRanges, nil
 }
@@ -254,13 +243,13 @@ func parseHexByte(text string) (byte, error) {
 	return value, nil
 }
 
-func parsePortRanges(name string, ports []uint16, ranges []string) ([]ECommon.PortRange, error) {
-	result := make([]ECommon.PortRange, 0, len(ports)+len(ranges))
+func parsePortRanges(name string, ports []uint16, ranges []string) ([]PortRange, error) {
+	result := make([]PortRange, 0, len(ports)+len(ranges))
 	for _, port := range ports {
 		if port == 0 {
 			return nil, E.New(name, " contains port 0")
 		}
-		result = append(result, ECommon.PortRange{Start: port, End: port})
+		result = append(result, PortRange{Start: port, End: port})
 	}
 	for _, value := range ranges {
 		separator := strings.IndexByte(value, ':')
@@ -293,7 +282,7 @@ func parsePortRanges(name string, ports []uint16, ranges []string) ([]ECommon.Po
 		if startValue == 0 || startValue > endValue {
 			return nil, E.New(name, " invalid range: ", value)
 		}
-		result = append(result, ECommon.PortRange{Start: startValue, End: endValue})
+		result = append(result, PortRange{Start: startValue, End: endValue})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Start != result[j].Start {
@@ -376,7 +365,7 @@ type normalizedDataPlanes struct {
 }
 
 func normalizeDataPlanes(options LC.EBPF) (normalizedDataPlanes, error) {
-	mode, localEnabled, sharedEnabled, err := normalizeModeWithEnabled(options.Mode, options.Local.Enabled, options.Shared.Enabled)
+	mode, localEnabled, sharedEnabled, err := normalizeModeWithEnabled(options.Mode, options.Local.Enable, options.Shared.Enable)
 	if err != nil {
 		return normalizedDataPlanes{}, err
 	}
@@ -425,12 +414,12 @@ func normalizeLocalDataPlane(options LC.EBPFLocal) (string, string, error) {
 func normalizeModeWithEnabled(mode string, localEnabled, sharedEnabled *bool) (string, bool, bool, error) {
 	if localEnabled != nil || sharedEnabled != nil {
 		if mode != "" {
-			return "", false, false, E.New("mode cannot be combined with local.enabled or shared.enabled")
+			return "", false, false, E.New("mode cannot be combined with local.enable or shared.enable")
 		}
 		local := localEnabled != nil && *localEnabled
 		shared := sharedEnabled != nil && *sharedEnabled
 		if !local && !shared {
-			return "", false, false, E.New("local.enabled or shared.enabled must be enabled")
+			return "", false, false, E.New("local.enable or shared.enable must be enabled")
 		}
 		switch {
 		case local && shared:

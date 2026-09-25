@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 
-	ECommon "github.com/metacubex/mihomo/common/ebpf"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/log"
 
@@ -57,10 +56,10 @@ func (i *Inbound) resolveAndroidUIDPolicy() error {
 // resolveAndroidUIDRanges expands the Android user/package policy into concrete
 // UID ranges, preserving any pre-existing include/exclude UID ranges.
 func resolveAndroidUIDRanges(
-	policy ECommon.LocalPolicy,
+	policy localUIDPolicy,
 	options *androidUIDOptions,
 	packageManager tun.PackageManager,
-) ([]ECommon.UIDRange, []ECommon.UIDRange) {
+) ([]UIDRange, []UIDRange) {
 	tunOptions := tun.Options{
 		IncludeUID:         toTunUIDRanges(policy.IncludeUID),
 		ExcludeUID:         toTunUIDRanges(policy.ExcludeUID),
@@ -103,7 +102,7 @@ func (androidUIDErrorHandler) NewError(ctx context.Context, err error) {
 	log.Errorln("[EBPF] resolve Android UID policy: %s", err.Error())
 }
 
-func toTunUIDRanges(uidRanges []ECommon.UIDRange) []ranges.Range[uint32] {
+func toTunUIDRanges(uidRanges []UIDRange) []ranges.Range[uint32] {
 	converted := make([]ranges.Range[uint32], 0, len(uidRanges))
 	for _, uidRange := range uidRanges {
 		converted = append(converted, ranges.New(uidRange.Start, uidRange.End))
@@ -111,10 +110,10 @@ func toTunUIDRanges(uidRanges []ECommon.UIDRange) []ranges.Range[uint32] {
 	return converted
 }
 
-func fromTunUIDRanges(uidRanges []ranges.Range[uint32]) []ECommon.UIDRange {
-	converted := make([]ECommon.UIDRange, 0, len(uidRanges))
+func fromTunUIDRanges(uidRanges []ranges.Range[uint32]) []UIDRange {
+	converted := make([]UIDRange, 0, len(uidRanges))
 	for _, uidRange := range uidRanges {
-		converted = append(converted, ECommon.UIDRange{Start: uidRange.Start, End: uidRange.End})
+		converted = append(converted, UIDRange{Start: uidRange.Start, End: uidRange.End})
 	}
 	return converted
 }
