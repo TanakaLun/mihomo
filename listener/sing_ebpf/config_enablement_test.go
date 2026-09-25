@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/metacubex/mihomo/common/structure"
 	LC "github.com/metacubex/mihomo/listener/config"
 )
 
@@ -102,5 +103,35 @@ func TestEnableJSONTag(t *testing.T) {
 				t.Fatalf("parse failed: %+v", e)
 			}
 		})
+	}
+}
+
+func TestEnableViaStructureDecoder(t *testing.T) {
+	// Reproduce the ParseListener decode path (common/structure with the
+	// "inbound" tag) to prove local.enable / shared.enable survive the full
+	// YAML-to-option mapping.
+	decoder := structure.NewDecoder(structure.Option{TagName: "inbound", WeaklyTypedInput: true, KeyReplacer: structure.DefaultKeyReplacer})
+	type option struct {
+		Mode   string          `inbound:"mode,omitempty"`
+		Local  LC.EBPFLocal    `inbound:"local,omitempty"`
+		Shared LC.EBPFShared   `inbound:"shared,omitempty"`
+	}
+	mapping := map[string]any{
+		"mode": "local",
+		"local": map[string]any{
+			"enable":     true,
+			"data-plane": "cgroup",
+			"ipv6":       true,
+		},
+	}
+	var o option
+	if err := decoder.Decode(mapping, &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Local.Enable == nil || !*o.Local.Enable {
+		t.Fatalf("local.enable not decoded: %+v", o.Local)
+	}
+	if o.Local.DataPlane != "cgroup" {
+		t.Fatalf("local.data-plane not decoded: %+v", o.Local)
 	}
 }

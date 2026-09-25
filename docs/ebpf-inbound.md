@@ -1,26 +1,31 @@
 # eBPF transparent inbound
 
-This document covers the Linux/Android cgroup eBPF transparent inbound and the
-optional shared-network TC data path. The feature is enabled only in builds
-with cgo and the `with_ebpf` build tag on Linux or Android. Other platforms
-compile with a stub that returns an explicit unsupported error.
+This document covers the mihomo eBPF transparent inbound: the local cgroup/TC
+data path and the optional shared-network TC (hotspot) data path. The feature
+is enabled only in builds with the `with_ebpf` build tag on Linux or Android.
+Other platforms compile with a stub that returns an explicit unsupported error.
+
+The eBPF business layer is extracted into the `github.com/CHIZI-0618/sing-ebpf`
+dependency. BPF objects ship pre-generated inside that module, so a mihomo
+build needs no clang step; the backend is pure Go and builds with
+`CGO_ENABLED=0`.
 
 ## Supported environments
 
 - Operating systems: Linux, Android.
 - Architectures built by CI: linux/amd64, linux/arm64, android/arm64.
-- Make targets: `linux-amd64-ebpf`, `linux-arm64-ebpf`, `android-arm64-ebpf`, `all-ebpf`.
-- Kernel: cgroup v2 with BPF support. The loader does not assume a fixed
-  minimum kernel version; run the capability probe below on the target device.
-- cgroup mode: v2 only. cgroup v1 is rejected with a clear error.
+- Make targets: `linux-amd64-ebpf`, `linux-arm64-ebpf`, plus any build with
+  `-tags "with_gvisor with_ebpf"`.
+- Kernel: cgroup v2 with BPF support. The loader detects required kernel
+  features at runtime and uses compatibility paths when optional helpers are
+  missing.
 
-Required kernel features are detected at runtime:
+Required kernel features:
 
 - cgroup/sockaddr program types: connect4/connect6, sendmsg4/6, recvmsg4/6.
 - BPF maps: hash, lpm_trie, array, and prog_array as used by the loader.
-- Optional: cgroup inet sock release attach type and
-  `BPF_MAP_LOOKUP_AND_DELETE_ELEM`. When either is missing the loader uses a
-  compatibility path automatically.
+- cgroup inet sock release attach and `BPF_MAP_LOOKUP_AND_DELETE_ELEM` are
+  optional; when either is missing the loader uses a compatibility path.
 
 ## Capabilities and kernel configuration
 
@@ -35,36 +40,16 @@ The kernel needs at least `CONFIG_BPF`, `CONFIG_BPF_SYSCALL`, and
 `CONFIG_CGROUP_BPF`. `CONFIG_BPF_JIT` is strongly recommended for throughput.
 The shared-network path additionally needs `CONFIG_NET_CLS_BPF`.
 
-## Capability probe
-
-Run the bundled probe before starting mihomo:
-
-```bash
-bash common/ebpf/check-kernel.sh --mode all
-```
-
-For a specific cgroup path and a shared-network downstream interface:
-
-```bash
-bash common/ebpf/check-kernel.sh --mode all --cgroup /sys/fs/cgroup --interface wlan0
-```
-
-The probe does not attach programs or change routes. With `bpftool` installed
-it performs transient feature probes; without `bpftool` it reports
-`UNKNOWN` for features that cannot be proven safely.
-
 ## Build
 
-The eBPF build requires a Linux build host (or Android NDK for Android) and
-clang for the BPF object:
+The eBPF build is a normal Go build with the `with_ebpf` tag; it does not
+require a BPF cross-compiler:
 
 ```bash
-make ebpf_generate
-CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags "with_gvisor with_ebpf" -o mihomo-ebpf .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags "with_gvisor with_ebpf" -o mihomo-ebpf .
 ```
 
-Android ARM64 uses the NDK clang as `CC`; see
-`.github/workflows/androidarm64.yml` and `.github/workflows/build-ebpf.yml`.
+Android ARM64 builds are covered by `.github/workflows/build-ebpf.yml`.
 
 ## Configuration
 
@@ -74,67 +59,89 @@ Add an `ebpf` listener to the `listeners` section:
 listeners:
   - name: ebpf-inbound
     type: ebpf
+    # enablement: mode (local/shared/hybrid) OR explicit local.enable /
+    # shared.enable. When enable is present, mode must be omitted.
+    mode: local
     network: [tcp, udp]
-    cgroup-path: /sys/fs/cgroup
-    redirect-address:
-      - 127.128.0.0/9
-    dns-mode: hijack
-    cgroup-ipv6-mode: auto
     udp-timeout: 300
-    map-capacity:
-      tcp-redirect: 65536
-      udp-redirect: 65536
-      socket-bypass: 65536
-    bypass-rule-set: []
-    include-uid: []
-    exclude-uid: []
-    shared-network:
-      enabled: false
+    tc-priority: 1
+    bypass-rule-set:
+      - geoip-cn
+    local:
+      enable: true
+      data-plane: cgroup      # cgroup (default) or tc
+      cgroup-path: ""         # absolute cgroup v2 path; empty = auto-detect
+      dns-mode: hijack        # hijack (default), respect_policy, or off
+      ipv6: true
+      bypass-private-address: true
+      include-uid: []
+      include-uid-range: []
+      exclude-uid: []
+      exclude-uid-range: []
+      include-android-user: []   # Android only
+      include-package: []        # Android only
+      exclude-package: []        # Android only
+      bypass-port: []
+      bypass-port-range: []
+    shared:
+      enable: false
+      data-plane: packet_rewrite # packet_rewrite (default) or socket_assign
+      interface: [wlan0]        # downstream interfaces (required when shared enabled)
+      dns-mode: hijack
+      ipv6: true
+      bypass-private-address: true
+      include-source-cidr: []
+      exclude-source-cidr: []
+      include-mac-address: []
+      exclude-mac-address: []
+      bypass-port: []
+      bypass-port-range: []
 ```
 
 Field behavior:
 
+- `mode`: `local` (default), `shared`, or `hybrid`. Alternatively use
+  `local.enable` / `shared.enable` as independent toggles; mode cannot be
+  combined with them. `local.enable: true` enables only local interception,
+  `shared.enable: true` enables only shared interception, both enable hybrid.
 - `network`: `tcp`, `udp`, or both. Defaults to both when omitted.
-- `cgroup-path`: absolute cgroup v2 directory. Empty means auto-detect.
-- `redirect-address`: at most one IPv4 prefix and one IPv6 prefix. The default
-  is IPv4 `127.128.0.0/9` with IPv6 disabled.
-- `dns-mode`: `hijack` or `off`. Defaults to `hijack`.
-- `cgroup-ipv6-mode`: `always`, `auto`, or `off`. Defaults to `always`.
-- `udp-timeout`: UDP NAT mapping timeout in seconds. Defaults to 300.
-- `map-capacity`: maximum entries for the redirect and bypass maps. Values are
-  capped at `1 << 20`; zero uses the built-in default.
-- `bypass-rule-set`: rule provider tags whose CIDRs populate the bypass map.
+- `local.data-plane`: `cgroup` (default) or `tc`. `cgroup` intercepts inner
+  sockets connect()/sendmsg(); `tc` steers packets on the default interface.
+- `local.cgroup-path`: absolute cgroup v2 directory for the cgroup data plane;
+  requires `data-plane=cgroup`. Empty means auto-detect.
+- `local.dns-mode` / `shared.dns-mode`: `hijack` (default), `respect_policy`,
+  or `off`. `hijack` force-rewrites port 53; `off` always passes 53.
+- `local.bypass-private-address`: private/groupcast/link-local destinations
+  keep their real IP and pass in kernel. Default true.
+- `shared.data-plane`: `packet_rewrite` (default) or `socket_assign`.
+- `shared.interface`: the downstream interfaces to take over (hotspot). Must
+  not be empty when shared is enabled, and must not contain `lo`.
+- `bypass-rule-set`: rule provider tags whose internal CIDRs are published as
+  pass decisions to every enabled data plane.
 - `include-uid`, `include-uid-range`, `exclude-uid`, `exclude-uid-range`:
   UID-based interception policy. Ranges use `start:end` syntax.
 - Android only: `include-android-user`, `include-package`, `exclude-package`.
-- `shared-network`: enables hotspot/TC forwarding on the named interfaces.
+- `bypass-port`, `bypass-port-range`: destination ports that bypass in kernel.
 
 ## IPv4 and IPv6 behavior
 
 The internal TCP and UDP listeners are created with explicit address families
-(`tcp4`, `tcp6`, `udp4`, `udp6`) and IPv6 listeners set `IPV6_V6ONLY`. This
-avoids implicit dual-stack listener behavior and keeps the BPF lookup keys
-deterministic. With `cgroup-ipv6-mode: auto`, IPv6 interception is enabled only
-when the host appears to provide IPv6 connectivity; the probe result is logged.
-
-The redirect address must not overlap routable local traffic. For IPv4 the
-default `127.128.0.0/9` is a loopback range that is not normally used by
-clients. For IPv6 supply a ULA or local-use prefix such as
-`fd00:ebpf::/64`; the IPv6 mode must not be `off` when an IPv6 prefix is
-configured.
+(`tcp4`, `tcp6`, `udp4`, `udp6`) and IPv6 listeners set `IPV6_V6ONLY`. The
+cgroup/shared redirect prefixes are selected automatically (IPv4 default
+`127.128.0.0/9`) and must not overlap routable local traffic. IPv6 interception
+is enabled per `ipv6` when the host provides IPv6 connectivity.
 
 ## Android differences
 
 Android uses the same cgroup v2 mechanism but the effective cgroup hierarchy
 and permission model differ by vendor. The auto-detected cgroup path can be
-overridden with `cgroup-path`. Package policy is resolved to Android UIDs and
-`include-android-user` maps a user ID to its per-user UID range. The DNS
+overridden with `local.cgroup-path`. Package policy is resolved to Android UIDs
+and `include-android-user` maps a user ID to its per-user UID range. The DNS
 tethering UID is always excluded.
 
 SELinux must permit BPF map/program creation, cgroup attach, and socket
 operations for the mihomo domain. On restricted Android builds the feature is
-usually only usable from a root or Magisk-provided service context. Run
-`common/ebpf/check-kernel.sh` on the device before debugging startup failures.
+usually only usable from a root or Magisk-provided service context.
 
 ## Containers
 
@@ -151,75 +158,34 @@ sysctl set on that interface.
 
 ## Diagnostics
 
-Start with the capability probe and the startup log line that lists the cgroup,
-listener port, DNS mode, programs, and bypass CIDR counts.
+The startup log lists the active data planes, listener port, DNS modes, and
+bypass CIDR counts. Interface updates drive a retry scheduler with per-component
+backoff; transient attach/reconcile failures are recovered automatically.
 
 - Verifier failure: the log includes the program name, errno, and verifier log.
   Check kernel config/helpers, map capacity, and `RLIMIT_MEMLOCK`.
 - Permission denied: verify root or `CAP_BPF`/`CAP_SYS_ADMIN`/`CAP_NET_ADMIN`,
   seccomp, Android SELinux, and container device policy.
-- Attach failed: verify the configured path is a cgroup v2 mount, is writable,
-  and is not already attached by another instance.
+- Attach failed: verify the configured cgroup path is a cgroup v2 mount, is
+  writable, and is not already attached by another instance.
 - Port conflict: the internal listener set binds an ephemeral port shared
   across the enabled protocol/family listeners. Startup rolls back all
   listeners if any bind fails; check `ss -lntup` for the reported port.
-- `cgroup_path` errors: the path must be absolute and inside the cgroup2 mount.
 
 ## Shutdown and cleanup
 
-`Close()` is idempotent. It stops UDP sweeps, detaches BPF links, closes map and
-program file descriptors, closes the internal listeners, removes shared-network
-TC attachments and local routes, and unregisters the socket protect function.
-No BPF objects are pinned by the implementation, so stopping mihomo should
-leave no persistent program or map names. Verify with:
-
-```bash
-bpftool prog show
-bpftool map show
-bpftool link show
-```
-
-If an old process crashed, restart mihomo; it creates new file descriptors and
-does not depend on stale pinned objects.
-
-## Privileged integration tests
-
-The `privileged-integration` job in `.github/workflows/build-ebpf.yml` probes
-the runner with `common/ebpf/check-kernel.sh` and marks the job SKIP when
-required BPF/cgroup features cannot be proven. GitHub-hosted runners are
-expected to SKIP because the probe cannot distinguish cgroup sockaddr attach
-subtypes without a real load. Run the real suite on a self-hosted Linux
-runner with cgroup v2, root access, and bpftool:
-
-```bash
-bash common/ebpf/check-kernel.sh --mode all --cgroup /sys/fs/cgroup
-SING_BOX_EBPF_INTEGRATION=1 CGO_ENABLED=1 go test -count=1 \
-  -tags "with_gvisor with_ebpf ebpf_integration" \
-  ./common/ebpf/... -run Integration
-```
-
-The suite creates temporary cgroups, loads programs, attaches traffic
-helpers, and cleans up all state on completion. After stopping mihomo on the
-same host, verify `bpftool prog show`, `bpftool map show`, and
-`bpftool link show` report no leftover objects.
-
-## Repository automation prerequisites
-
-The sync workflow creates PRs and failure Issues. The target repository must
-have:
-
-- Issues enabled, otherwise the failure notification step exits with an
-  actionable error instead of creating an Issue.
-- GitHub Actions permitted to create and approve pull requests.
-- The sync workflow present on the repository default branch so the
-  `schedule` trigger is active.
+`Close()` is idempotent. It stops UDP sweeps, detaches BPF links, closes map
+and program file descriptors, closes the internal listeners, removes
+shared-network TC attachments and local routes, and unregisters the socket
+protect function. No BPF objects are pinned by the implementation, so stopping
+mihomo leaves no persistent program or map names.
 
 ## Relationship with TUN, TProxy, and Redir
 
-The eBPF inbound intercepts sockets inside the selected cgroup; it is not a
-full TUN device and does not route all host traffic by itself. It can coexist
-with TUN, TProxy, and Redir, but avoid attaching multiple transparent inbound
-mechanisms to the same cgroup or interface unless you intentionally split
-traffic with UID, CIDR, and `bypass-rule-set` policies. The shared-network mode
+The eBPF inbound intercepts sockets inside the selected cgroup or interface; it
+is not a full TUN device and does not route all host traffic by itself. It can
+coexist with TUN, TProxy, and Redir, but avoid attaching multiple transparent
+inbound mechanisms to the same cgroup or interface unless you intentionally
+split traffic with UID, CIDR, and `bypass-rule-set` policies. The shared mode
 uses TC on named downstream interfaces and can be used for hotspot forwarding
 while the cgroup path handles local apps.
