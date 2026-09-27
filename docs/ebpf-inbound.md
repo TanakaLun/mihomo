@@ -105,6 +105,7 @@ Field behavior:
   combined with them. `local.enable: true` enables only local interception,
   `shared.enable: true` enables only shared interception, both enable hybrid.
 - `network`: `tcp`, `udp`, or both. Defaults to both when omitted.
+- `udp-timeout`: UDP timeout in seconds. Omitted or zero uses 300 seconds.
 - `local.data-plane`: `cgroup` (default) or `tc`. `cgroup` intercepts inner
   sockets connect()/sendmsg(); `tc` steers packets on the default interface.
 - `local.cgroup-path`: absolute cgroup v2 directory for the cgroup data plane;

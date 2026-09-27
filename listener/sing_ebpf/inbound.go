@@ -300,11 +300,7 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 		}
 		inbound.bypassRuleSet = append(inbound.bypassRuleSet, ruleSet)
 	}
-	udpTimeout := 5 * time.Minute
-	if options.UDPTimeout != 0 {
-		udpTimeout = time.Duration(options.UDPTimeout)
-	}
-	inbound.udpTimeout = udpTimeout
+	inbound.udpTimeout = normalizeUDPTimeout(options.UDPTimeout)
 	if err := inbound.compilePolicy(); err != nil {
 		return nil, err
 	}
