@@ -56,7 +56,7 @@ type sharedRewrite struct {
 func newSharedRewrite(inbound *Inbound, options LC.EBPFShared) *sharedRewrite {
 	mapCapacity := effectiveSharedNetworkMapCapacity(
 		ECommon.DefaultSharedPacketRewriteMapCapacity(),
-		len(inbound.bypassRuleSet) > 0 ||
+		len(inbound.sharedBypassRuleSet) > 0 ||
 			len(options.IncludeSourceCIDR) > 0 || len(options.ExcludeSourceCIDR) > 0 ||
 			len(options.IncludeMACAddress) > 0 || len(options.ExcludeMACAddress) > 0,
 	)

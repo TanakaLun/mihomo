@@ -11,14 +11,12 @@ import (
 
 type EBPFOption struct {
 	BaseOption
-	Mode          string        `inbound:"mode,omitempty"`
-	Network       []string      `inbound:"network,omitempty"`
-	UDPTimeout    int64         `inbound:"udp-timeout,omitempty"`
-	TCPriority    uint16        `inbound:"tc-priority,omitempty"`
-	BypassRuleSet []string      `inbound:"bypass-rule-set,omitempty"`
-	FakeIPICMP    string        `inbound:"fakeip-icmp,omitempty"`
-	Local         LC.EBPFLocal  `inbound:"local,omitempty"`
-	Shared        LC.EBPFShared `inbound:"shared,omitempty"`
+	Network    []string      `inbound:"network,omitempty"`
+	UDPTimeout int64         `inbound:"udp-timeout,omitempty"`
+	TCPriority uint16        `inbound:"tc-priority,omitempty"`
+	FakeIPICMP string        `inbound:"fakeip-icmp,omitempty"`
+	Local      LC.EBPFLocal  `inbound:"local,omitempty"`
+	Shared     LC.EBPFShared `inbound:"shared,omitempty"`
 }
 
 func (o EBPFOption) Equal(config C.InboundConfig) bool {
@@ -41,14 +39,12 @@ func NewEBPF(options *EBPFOption) (*EBPF, error) {
 		Base:   base,
 		config: options,
 		ebpf: LC.EBPF{
-			Mode:          options.Mode,
-			Network:       options.Network,
-			UDPTimeout:    options.UDPTimeout,
-			TCPriority:    options.TCPriority,
-			BypassRuleSet: options.BypassRuleSet,
-			FakeIPICMP:    options.FakeIPICMP,
-			Local:         options.Local,
-			Shared:        options.Shared,
+			Network:    options.Network,
+			UDPTimeout: options.UDPTimeout,
+			TCPriority: options.TCPriority,
+			FakeIPICMP: options.FakeIPICMP,
+			Local:      options.Local,
+			Shared:     options.Shared,
 		},
 	}, nil
 }

@@ -36,7 +36,6 @@ type Inbound struct {
 	ctx             context.Context
 	tunnel          C.Tunnel
 	additions       []inbound.Addition
-	mode            string
 	localEnabled    bool
 	localDataPlane  string
 	cgroupPath      string
@@ -89,15 +88,18 @@ type Inbound struct {
 
 	sharedRewrite *sharedRewrite
 
-	bypassRuleSetAccess          sync.Mutex
-	bypassRuleSet                []P.RuleProvider
-	bypassRuleSetCallback        io.Closer
-	bypassRuleSetStarted         bool
-	bypassCIDR                   []netip.Prefix
-	bypassRuleSetDirty           bool
-	bypassRuleSetNeedsRetry      bool
-	bypassRuleSetInconsistent    bool
-	bypassRuleSetRetryCount      uint64
+	bypassRuleSetAccess       sync.Mutex
+	localBypassRuleSet        []P.RuleProvider
+	localBypassRuleSetCB      io.Closer
+	localBypassRuleSetStarted bool
+	sharedBypassRuleSet       []P.RuleProvider
+	sharedBypassRuleSetCB     io.Closer
+	sharedBypassRuleSetStarted bool
+	bypassCIDR                []netip.Prefix
+	bypassRuleSetDirty        bool
+	bypassRuleSetNeedsRetry   bool
+	bypassRuleSetInconsistent bool
+	bypassRuleSetRetryCount   uint64
 	bypassRuleSetPolicyVersion   uint64
 	bypassRuleSetExpectedVersion uint64
 	bypassRuleSetTC              bypassCIDRBackendVersion
@@ -159,7 +161,7 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 	if err != nil {
 		return nil, err
 	}
-	mode, localEnabled, sharedEnabled := selection.mode, selection.localEnabled, selection.sharedEnabled
+	localEnabled, sharedEnabled := selection.localEnabled, selection.sharedEnabled
 	if err = validateLocalOptions(localEnabled, options.Local); err != nil {
 		return nil, err
 	}
@@ -230,7 +232,6 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 		ctx:                 ctx,
 		tunnel:              tunnel,
 		additions:           additions,
-		mode:                mode,
 		localEnabled:        localEnabled,
 		localDataPlane:      localDataPlane,
 		cgroupPath:          cgroupPath,
@@ -293,12 +294,26 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 	if !ok {
 		return nil, E.New("tunnel does not expose rule providers")
 	}
-	for _, ruleSetTag := range options.BypassRuleSet {
-		ruleSet, loaded := rp.RuleProviders()[ruleSetTag]
-		if !loaded {
-			return nil, E.New("parse bypass_rule_set: rule-set not found: ", ruleSetTag)
+	loadBypassRuleSets := func(scope string, target *[]P.RuleProvider, tags []string) error {
+		seen := make(map[string]struct{})
+		for _, ruleSetTag := range tags {
+			if _, ok := seen[ruleSetTag]; ok {
+				continue
+			}
+			seen[ruleSetTag] = struct{}{}
+			ruleSet, loaded := rp.RuleProviders()[ruleSetTag]
+			if !loaded {
+				return E.New("parse ", scope, ".bypass_rule_set: rule-set not found: ", ruleSetTag)
+			}
+			*target = append(*target, ruleSet)
 		}
-		inbound.bypassRuleSet = append(inbound.bypassRuleSet, ruleSet)
+		return nil
+	}
+	if err = loadBypassRuleSets("local", &inbound.localBypassRuleSet, options.Local.BypassRuleSet); err != nil {
+		return nil, err
+	}
+	if err = loadBypassRuleSets("shared", &inbound.sharedBypassRuleSet, options.Shared.BypassRuleSet); err != nil {
+		return nil, err
 	}
 	inbound.udpTimeout = normalizeUDPTimeout(options.UDPTimeout)
 	if err := inbound.compilePolicy(); err != nil {
@@ -490,8 +505,19 @@ func (i *Inbound) start() error {
 func (i *Inbound) logInboundReady(network, defaultInterface, localInterface string, sharedInterfaces []string, dataPlane tcRuntime) {
 	if dataPlane == nil && i.sharedRewrite == nil {
 		cgroupBackend := i.cgroupBackendInstance()
-		log.Infoln("[EBPF] cgroup active: mode=%s, network=%s, cgroup=%s, ipv6=%v, listeners=[%s], self_bypass=%s, process_tracking=%s",
-			i.mode,
+		log.Infoln("[EBPF] cgroup active: local=%s, shared=%s, network=%s, cgroup=%s, ipv6=%v, listeners=[%s], self_bypass=%s, process_tracking=%s",
+			func() string {
+				if !i.localEnabled {
+					return "off"
+				}
+				return i.localDataPlane
+			}(),
+			func() string {
+				if !i.sharedEnabled {
+					return "off"
+				}
+				return i.sharedDataPlane
+			}(),
 			network,
 			cgroupBackend.CgroupPath(),
 			i.cgroupIPv6Enabled(),
@@ -501,9 +527,7 @@ func (i *Inbound) logInboundReady(network, defaultInterface, localInterface stri
 		)
 		return
 	}
-	log.Infoln("[EBPF] TC active: mode=%s, network=%s, local_data_plane=%s, shared_data_plane=%s, default_interface=%s, local_interface=%s, shared_interfaces=[%s], listeners=[%s], tc_priority=%d",
-		i.mode,
-		network,
+	log.Infoln("[EBPF] TC active: local_data_plane=%s, shared_data_plane=%s, network=%s, default_interface=%s, local_interface=%s, shared_interfaces=[%s], listeners=[%s], tc_priority=%d",
 		func() string {
 			if !i.localEnabled {
 				return "off"
@@ -516,6 +540,7 @@ func (i *Inbound) logInboundReady(network, defaultInterface, localInterface stri
 			}
 			return i.sharedDataPlane
 		}(),
+		network,
 		defaultInterface,
 		localInterface,
 		joinStringList(sharedInterfaces),

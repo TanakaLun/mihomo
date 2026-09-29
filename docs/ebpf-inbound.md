@@ -59,14 +59,8 @@ Add an `ebpf` listener to the `listeners` section:
 listeners:
   - name: ebpf-inbound
     type: ebpf
-    # enablement: mode (local/shared/hybrid) OR explicit local.enable /
-    # shared.enable. When enable is present, mode must be omitted.
-    mode: local
-    network: [tcp, udp]
-    udp-timeout: 300
-    tc-priority: 1
-    bypass-rule-set:
-      - geoip-cn
+    # enablement: explicit local.enable / shared.enable toggles. With no
+    # explicit enablement, local interception is enabled by default.
     local:
       enable: true
       data-plane: cgroup      # cgroup (default) or tc
@@ -74,6 +68,8 @@ listeners:
       dns-mode: hijack        # hijack (default), respect_policy, or off
       ipv6: true
       bypass-private-address: true
+      bypass-rule-set:
+        - geoip-cn
       include-uid: []
       include-uid-range: []
       exclude-uid: []
@@ -90,6 +86,8 @@ listeners:
       dns-mode: hijack
       ipv6: true
       bypass-private-address: true
+      bypass-rule-set:
+        - geoip-cn
       include-source-cidr: []
       exclude-source-cidr: []
       include-mac-address: []
@@ -100,10 +98,10 @@ listeners:
 
 Field behavior:
 
-- `mode`: `local` (default), `shared`, or `hybrid`. Alternatively use
-  `local.enable` / `shared.enable` as independent toggles; mode cannot be
-  combined with them. `local.enable: true` enables only local interception,
-  `shared.enable: true` enables only shared interception, both enable hybrid.
+- enablement: use `local.enable` / `shared.enable` as independent toggles.
+  `local.enable: true` enables only local interception, `shared.enable: true`
+  enables only shared interception, enabling both enables hybrid. With no
+  explicit enablement, local interception is enabled by default (shared off).
 - `network`: `tcp`, `udp`, or both. Defaults to both when omitted.
 - `udp-timeout`: UDP timeout in seconds. Omitted or zero uses 300 seconds.
 - `local.data-plane`: `cgroup` (default) or `tc`. `cgroup` intercepts inner
@@ -114,11 +112,12 @@ Field behavior:
   or `off`. `hijack` force-rewrites port 53; `off` always passes 53.
 - `local.bypass-private-address`: private/groupcast/link-local destinations
   keep their real IP and pass in kernel. Default true.
+- `local.bypass-rule-set` / `shared.bypass-rule-set`: rule provider tags whose
+  internal CIDRs are published as pass decisions to the matching local or
+  shared data plane.
 - `shared.data-plane`: `packet_rewrite` (default) or `socket_assign`.
 - `shared.interface`: the downstream interfaces to take over (hotspot). Must
   not be empty when shared is enabled, and must not contain `lo`.
-- `bypass-rule-set`: rule provider tags whose internal CIDRs are published as
-  pass decisions to every enabled data plane.
 - `include-uid`, `include-uid-range`, `exclude-uid`, `exclude-uid-range`:
   UID-based interception policy. Ranges use `start:end` syntax.
 - Android only: `include-android-user`, `include-package`, `exclude-package`.

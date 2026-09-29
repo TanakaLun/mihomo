@@ -6,14 +6,12 @@ import (
 )
 
 type EBPF struct {
-	Mode          string     `json:"mode" yaml:"mode" inbound:"mode,omitempty"`
-	Network       []string   `json:"network" yaml:"network"`
-	UDPTimeout    int64      `json:"udp-timeout" yaml:"udp-timeout"`
-	TCPriority    uint16     `json:"tc-priority" yaml:"tc-priority" inbound:"tc-priority,omitempty"`
-	BypassRuleSet []string   `json:"bypass-rule-set" yaml:"bypass-rule-set"`
-	FakeIPICMP    string     `json:"fakeip-icmp" yaml:"fakeip-icmp" inbound:"fakeip-icmp,omitempty"`
-	Local         EBPFLocal  `json:"local" yaml:"local" inbound:"local,omitempty"`
-	Shared        EBPFShared `json:"shared" yaml:"shared" inbound:"shared,omitempty"`
+	Network    []string   `json:"network" yaml:"network"`
+	UDPTimeout int64      `json:"udp-timeout" yaml:"udp-timeout"`
+	TCPriority uint16     `json:"tc-priority" yaml:"tc-priority" inbound:"tc-priority,omitempty"`
+	FakeIPICMP string     `json:"fakeip-icmp" yaml:"fakeip-icmp" inbound:"fakeip-icmp,omitempty"`
+	Local      EBPFLocal  `json:"local" yaml:"local" inbound:"local,omitempty"`
+	Shared     EBPFShared `json:"shared" yaml:"shared" inbound:"shared,omitempty"`
 }
 
 type EBPFLocal struct {
@@ -23,6 +21,7 @@ type EBPFLocal struct {
 	DNSMode              string   `json:"dns-mode" yaml:"dns-mode" inbound:"dns-mode,omitempty"`
 	IPv6                 *bool    `json:"ipv6" yaml:"ipv6" inbound:"ipv6,omitempty"`
 	BypassPrivateAddress *bool    `json:"bypass-private-address" yaml:"bypass-private-address" inbound:"bypass-private-address,omitempty"`
+	BypassRuleSet        []string `json:"bypass-rule-set" yaml:"bypass-rule-set" inbound:"bypass-rule-set,omitempty"`
 	IncludeUID           []uint32 `json:"include-uid" yaml:"include-uid" inbound:"include-uid,omitempty"`
 	IncludeUIDRange      []string `json:"include-uid-range" yaml:"include-uid-range" inbound:"include-uid-range,omitempty"`
 	ExcludeUID           []uint32 `json:"exclude-uid" yaml:"exclude-uid" inbound:"exclude-uid,omitempty"`
@@ -41,6 +40,7 @@ type EBPFShared struct {
 	Interface            []string       `json:"interface" yaml:"interface" inbound:"interface,omitempty"`
 	IPv6                 *bool          `json:"ipv6" yaml:"ipv6" inbound:"ipv6,omitempty"`
 	BypassPrivateAddress *bool          `json:"bypass-private-address" yaml:"bypass-private-address" inbound:"bypass-private-address,omitempty"`
+	BypassRuleSet        []string       `json:"bypass-rule-set" yaml:"bypass-rule-set" inbound:"bypass-rule-set,omitempty"`
 	IncludeSourceCIDR    []netip.Prefix `json:"include-source-cidr" yaml:"include-source-cidr" inbound:"include-source-cidr,omitempty"`
 	ExcludeSourceCIDR    []netip.Prefix `json:"exclude-source-cidr" yaml:"exclude-source-cidr" inbound:"exclude-source-cidr,omitempty"`
 	IncludeMACAddress    []string       `json:"include-mac-address" yaml:"include-mac-address" inbound:"include-mac-address,omitempty"`
@@ -51,9 +51,7 @@ type EBPFShared struct {
 
 func (c EBPF) String() string {
 	builder := &strings.Builder{}
-	builder.WriteString("mode=")
-	builder.WriteString(c.Mode)
-	builder.WriteString(", network=")
+	builder.WriteString("network=")
 	builder.WriteString(strings.Join(c.Network, ","))
 	return builder.String()
 }

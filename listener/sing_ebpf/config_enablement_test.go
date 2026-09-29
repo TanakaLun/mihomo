@@ -12,17 +12,17 @@ import (
 
 func boolPtr(v bool) *bool { return &v }
 
-func TestEnablementModeLocal(t *testing.T) {
-	// mode: local only -> local enabled, shared disabled
-	sel, err := normalizeDataPlanes(LC.EBPF{Mode: "local"})
+func TestEnablementDefaultLocal(t *testing.T) {
+	// No local.enable / shared.enable -> local only by default.
+	sel, err := normalizeDataPlanes(LC.EBPF{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !sel.localEnabled || sel.sharedEnabled {
-		t.Fatalf("mode=local: local=%v shared=%v", sel.localEnabled, sel.sharedEnabled)
+		t.Fatalf("default enablement: local=%v shared=%v", sel.localEnabled, sel.sharedEnabled)
 	}
 	if sel.localDataPlane != localDataPlaneCgroup {
-		t.Fatalf("mode=local default data plane = %q", sel.localDataPlane)
+		t.Fatalf("default data plane = %q", sel.localDataPlane)
 	}
 }
 
@@ -55,8 +55,32 @@ func TestEnablementSharedEnableField(t *testing.T) {
 	}
 }
 
+func TestEnablementHybridEnableFields(t *testing.T) {
+	// local.enable + shared.enable -> both
+	sel, err := normalizeDataPlanes(LC.EBPF{
+		Local:  LC.EBPFLocal{Enable: boolPtr(true)},
+		Shared: LC.EBPFShared{Enable: boolPtr(true), Interface: []string{"wlan2"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sel.localEnabled || !sel.sharedEnabled {
+		t.Fatalf("hybrid enablement: local=%v shared=%v", sel.localEnabled, sel.sharedEnabled)
+	}
+}
+
+func TestEnablementBothDisabled(t *testing.T) {
+	// local.enable=false and shared.enable=false -> error
+	if _, err := normalizeDataPlanes(LC.EBPF{
+		Local:  LC.EBPFLocal{Enable: boolPtr(false)},
+		Shared: LC.EBPFShared{Enable: boolPtr(false)},
+	}); err == nil {
+		t.Fatal("both disabled should error")
+	}
+}
+
 func TestValidateSharedDisabledNoConfig(t *testing.T) {
-	// mode=local with empty shared block should NOT error
+	// local only with empty shared block should NOT error
 	var shared LC.EBPFShared
 	if err := validateSharedOptions(false, shared); err != nil {
 		t.Fatalf("empty shared config with shared disabled should pass: %v", err)
@@ -64,7 +88,7 @@ func TestValidateSharedDisabledNoConfig(t *testing.T) {
 }
 
 func TestValidateSharedDisabledWithIPv6(t *testing.T) {
-	// mode=local but shared.ipv6 set -> error (matches upstream intent)
+	// local only but shared.ipv6 set -> error (matches upstream intent)
 	shared := LC.EBPFShared{IPv6: boolPtr(true)}
 	if err := validateSharedOptions(false, shared); err == nil {
 		t.Fatal("shared.ipv6 with shared disabled should error")
@@ -84,13 +108,23 @@ func TestEnableJSONTag(t *testing.T) {
 		},
 		{
 			"shared enable true",
-			`{"shared":{"enable":true}}`,
+			`{"shared":{"enable":true,"interface":["wlan2"]}}`,
 			func(e LC.EBPF) bool { return e.Shared.Enable != nil && *e.Shared.Enable },
 		},
 		{
 			"shared enable false with data-plane",
 			`{"shared":{"enable":false,"interface":["wlan2"]}}`,
 			func(e LC.EBPF) bool { return e.Shared.Enable != nil && !*e.Shared.Enable },
+		},
+		{
+			"local bypass rule set",
+			`{"local":{"bypass-rule-set":["geoip-cn"]}}`,
+			func(e LC.EBPF) bool { return len(e.Local.BypassRuleSet) == 1 && e.Local.BypassRuleSet[0] == "geoip-cn" },
+		},
+		{
+			"shared bypass rule set",
+			`{"shared":{"bypass-rule-set":["geoip-cn"]}}`,
+			func(e LC.EBPF) bool { return len(e.Shared.BypassRuleSet) == 1 && e.Shared.BypassRuleSet[0] == "geoip-cn" },
 		},
 	}
 	for _, tc := range cases {
@@ -108,20 +142,24 @@ func TestEnableJSONTag(t *testing.T) {
 
 func TestEnableViaStructureDecoder(t *testing.T) {
 	// Reproduce the ParseListener decode path (common/structure with the
-	// "inbound" tag) to prove local.enable / shared.enable survive the full
-	// YAML-to-option mapping.
+	// "inbound" tag) to prove local.enable / shared.enable and the per-scope
+	// bypass-rule-set survive the full YAML-to-option mapping.
 	decoder := structure.NewDecoder(structure.Option{TagName: "inbound", WeaklyTypedInput: true, KeyReplacer: structure.DefaultKeyReplacer})
 	type option struct {
-		Mode   string          `inbound:"mode,omitempty"`
-		Local  LC.EBPFLocal    `inbound:"local,omitempty"`
-		Shared LC.EBPFShared   `inbound:"shared,omitempty"`
+		Local  LC.EBPFLocal  `inbound:"local,omitempty"`
+		Shared LC.EBPFShared `inbound:"shared,omitempty"`
 	}
 	mapping := map[string]any{
-		"mode": "local",
 		"local": map[string]any{
-			"enable":     true,
-			"data-plane": "cgroup",
-			"ipv6":       true,
+			"enable":           true,
+			"data-plane":       "cgroup",
+			"ipv6":             true,
+			"bypass-rule-set":  []string{"geoip-cn"},
+		},
+		"shared": map[string]any{
+			"enable":          true,
+			"interface":       []string{"wlan2"},
+			"bypass-rule-set": []string{"geoip-lan"},
 		},
 	}
 	var o option
@@ -133,5 +171,14 @@ func TestEnableViaStructureDecoder(t *testing.T) {
 	}
 	if o.Local.DataPlane != "cgroup" {
 		t.Fatalf("local.data-plane not decoded: %+v", o.Local)
+	}
+	if len(o.Local.BypassRuleSet) != 1 || o.Local.BypassRuleSet[0] != "geoip-cn" {
+		t.Fatalf("local.bypass-rule-set not decoded: %+v", o.Local)
+	}
+	if o.Shared.Enable == nil || !*o.Shared.Enable {
+		t.Fatalf("shared.enable not decoded: %+v", o.Shared)
+	}
+	if len(o.Shared.BypassRuleSet) != 1 || o.Shared.BypassRuleSet[0] != "geoip-lan" {
+		t.Fatalf("shared.bypass-rule-set not decoded: %+v", o.Shared)
 	}
 }

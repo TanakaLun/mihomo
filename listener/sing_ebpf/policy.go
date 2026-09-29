@@ -3,6 +3,7 @@
 package sing_ebpf
 
 import (
+	"io"
 	"net/netip"
 
 	ECommon "github.com/CHIZI-0618/sing-ebpf"
@@ -22,18 +23,36 @@ type toIpCidr interface {
 func (i *Inbound) startBypassRuleSets() error {
 	i.bypassRuleSetAccess.Lock()
 	defer i.bypassRuleSetAccess.Unlock()
-	if i.bypassRuleSetStarted {
+	if i.localBypassRuleSetStarted && i.sharedBypassRuleSetStarted {
 		return nil
 	}
 	rp, ok := i.tunnel.(P.Tunnel)
 	if !ok {
 		return E.New("tunnel does not expose rule providers")
 	}
-	i.bypassRuleSetCallback = rp.RuleUpdateCallback().Register(i.updateBypassRuleSet)
-	i.bypassRuleSetStarted = true
-	err := i.refreshBypassCIDRsLocked()
-	if err != nil {
-		i.stopBypassRuleSetsLocked()
+	register := func(started *bool, callback *io.Closer) error {
+		if *started {
+			return nil
+		}
+		*started = true
+		*callback = rp.RuleUpdateCallback().Register(i.updateBypassRuleSet)
+		return nil
+	}
+	registeredLocal, registeredShared := false, false
+	defer func() {
+		if !registeredLocal || !registeredShared {
+			i.stopBypassRuleSetsLocked()
+		}
+	}()
+	if err := register(&i.localBypassRuleSetStarted, &i.localBypassRuleSetCB); err != nil {
+		return err
+	}
+	registeredLocal = true
+	if err := register(&i.sharedBypassRuleSetStarted, &i.sharedBypassRuleSetCB); err != nil {
+		return err
+	}
+	registeredShared = true
+	if err := i.refreshBypassCIDRsLocked(); err != nil {
 		return err
 	}
 	return nil
@@ -46,24 +65,29 @@ func (i *Inbound) stopBypassRuleSets() {
 }
 
 func (i *Inbound) stopBypassRuleSetsLocked() {
-	if !i.bypassRuleSetStarted {
-		return
+	for _, current := range []struct {
+		started  *bool
+		callback *io.Closer
+	}{
+		{&i.localBypassRuleSetStarted, &i.localBypassRuleSetCB},
+		{&i.sharedBypassRuleSetStarted, &i.sharedBypassRuleSetCB},
+	} {
+		if *current.callback != nil {
+			_ = (*current.callback).Close()
+			*current.callback = nil
+		}
+		*current.started = false
 	}
-	if i.bypassRuleSetCallback != nil {
-		_ = i.bypassRuleSetCallback.Close()
-		i.bypassRuleSetCallback = nil
-	}
-	i.bypassRuleSetStarted = false
 }
 
 func (i *Inbound) updateBypassRuleSet(P.RuleProvider) {
 	i.bypassRuleSetAccess.Lock()
 	defer i.bypassRuleSetAccess.Unlock()
-	if !i.bypassRuleSetStarted {
+	if !i.localBypassRuleSetStarted && !i.sharedBypassRuleSetStarted {
 		return
 	}
 	if err := i.refreshBypassCIDRsLocked(); err != nil {
-		log.Errorln("[EBPF] refresh TC eBPF bypass_rule_set; keeping previous policy: %s", err.Error())
+		log.Errorln("[EBPF] refresh eBPF bypass_rule_set; keeping previous policy: %s", err.Error())
 		i.bypassRuleSetNeedsRetry = true
 		i.notifyTCInterfaceUpdate()
 		return
@@ -71,9 +95,9 @@ func (i *Inbound) updateBypassRuleSet(P.RuleProvider) {
 	i.bypassRuleSetNeedsRetry = false
 }
 
-func (i *Inbound) refreshBypassCIDRsLocked() error {
+func collectBypassPrefixes(ruleSets []P.RuleProvider) []netip.Prefix {
 	var prefixes []netip.Prefix
-	for _, ruleSet := range i.bypassRuleSet {
+	for _, ruleSet := range ruleSets {
 		strategy := ruleSet.Strategy()
 		ipCidrStrategy, ok := strategy.(toIpCidr)
 		if !ok {
@@ -85,32 +109,48 @@ func (i *Inbound) refreshBypassCIDRsLocked() error {
 		}
 		prefixes = append(prefixes, ipSet.Prefixes()...)
 	}
-	if conflicts := i.fakeIPBypassConflictCount(prefixes); conflicts > 0 {
+	return prefixes
+}
+
+func (i *Inbound) refreshBypassCIDRsLocked() error {
+	localPrefixes := collectBypassPrefixes(i.localBypassRuleSet)
+	sharedPrefixes := collectBypassPrefixes(i.sharedBypassRuleSet)
+	allPrefixes := make([]netip.Prefix, 0, len(localPrefixes)+len(sharedPrefixes))
+	allPrefixes = append(allPrefixes, localPrefixes...)
+	allPrefixes = append(allPrefixes, sharedPrefixes...)
+	if conflicts := i.fakeIPBypassConflictCount(allPrefixes); conflicts > 0 {
 		log.Warnln("[EBPF] FakeIP force interception overrides bypass_rule_set CIDRs: overlaps=%d", conflicts)
 	}
-	i.bypassCIDR = prefixes
-	decisions := make([]ECommon.CIDRDecision, 0, len(prefixes))
-	for _, prefix := range prefixes {
-		decisions = append(decisions, ECommon.CIDRDecision{Prefix: prefix, Action: ECommon.DecisionPass})
+	i.bypassCIDR = allPrefixes
+	decisions := func(prefixes []netip.Prefix) []ECommon.CIDRDecision {
+		decisions := make([]ECommon.CIDRDecision, 0, len(prefixes))
+		for _, prefix := range prefixes {
+			decisions = append(decisions, ECommon.CIDRDecision{Prefix: prefix, Action: ECommon.DecisionPass})
+		}
+		return decisions
 	}
+	localDecisions := decisions(localPrefixes)
+	sharedDecisions := decisions(sharedPrefixes)
 	if backend := i.tcBackend(); backend != nil {
-		if _, err := backend.UpdateLocalDestinationDecisions(decisions); err != nil {
-			return err
+		if i.localTCEnabled() {
+			if _, err := backend.UpdateLocalDestinationDecisions(localDecisions); err != nil {
+				return err
+			}
 		}
 		if i.sharedSocketAssignEnabled() {
-			if _, err := backend.UpdateSharedDestinationDecisions(decisions); err != nil {
+			if _, err := backend.UpdateSharedDestinationDecisions(sharedDecisions); err != nil {
 				return err
 			}
 		}
 	}
 	if backend := i.cgroupBackendInstance(); backend != nil {
-		if _, err := backend.UpdateDestinationDecisions(decisions); err != nil {
+		if _, err := backend.UpdateDestinationDecisions(localDecisions); err != nil {
 			return err
 		}
 	}
 	if i.sharedRewrite != nil {
 		if backend := i.sharedRewrite.sharedBackendInstance(); backend != nil {
-			if _, err := backend.UpdateDestinationDecisions(decisions); err != nil {
+			if _, err := backend.UpdateDestinationDecisions(sharedDecisions); err != nil {
 				return err
 			}
 		}
@@ -118,7 +158,7 @@ func (i *Inbound) refreshBypassCIDRsLocked() error {
 	// Publish the effective bypass CIDR set to the DNS fake-ip middleware so
 	// domains whose real addresses fall inside it keep their real IP and the
 	// kernel eBPF bypass can engage.
-	if len(i.bypassRuleSet) > 0 {
+	if len(i.bypassCIDR) > 0 {
 		var builder netipx.IPSetBuilder
 		for _, prefix := range i.bypassCIDR {
 			builder.AddPrefix(prefix)
@@ -142,7 +182,7 @@ type bypassCIDRBackendVersion struct {
 func (i *Inbound) retryBypassRuleSetIfNeededLocked() tcSharedRewriteOutcome {
 	i.bypassRuleSetAccess.Lock()
 	defer i.bypassRuleSetAccess.Unlock()
-	if !i.bypassRuleSetStarted {
+	if !i.localBypassRuleSetStarted && !i.sharedBypassRuleSetStarted {
 		return tcSharedRewriteSettled
 	}
 	if i.bypassRuleSetBackendRequiresRebuildLocked() {
@@ -154,7 +194,7 @@ func (i *Inbound) retryBypassRuleSetIfNeededLocked() tcSharedRewriteOutcome {
 	}
 	i.bypassRuleSetRetryCount++
 	if err := i.refreshBypassCIDRsLocked(); err != nil {
-		log.Errorln("[EBPF] retry TC eBPF bypass_rule_set refresh: %s", err.Error())
+		log.Errorln("[EBPF] retry eBPF bypass_rule_set refresh: %s", err.Error())
 		return tcSharedRewriteRecoverable
 	}
 	i.bypassRuleSetNeedsRetry = false

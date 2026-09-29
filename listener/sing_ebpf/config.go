@@ -16,10 +16,6 @@ import (
 )
 
 const (
-	ebpfModeLocal  = "local"
-	ebpfModeShared = "shared"
-	ebpfModeHybrid = "hybrid"
-
 	dnsModeHijack        = "hijack"
 	dnsModeRespectPolicy = "respect_policy"
 	dnsModeRespectBypass = "respect_bypass"
@@ -56,17 +52,16 @@ func normalizeFakeIPICMP(mode string) (bool, error) {
 	}
 }
 
-func normalizeMode(mode string) (string, bool, bool, error) {
-	switch mode {
-	case "", ebpfModeLocal:
-		return ebpfModeLocal, true, false, nil
-	case ebpfModeShared:
-		return ebpfModeShared, false, true, nil
-	case ebpfModeHybrid:
-		return ebpfModeHybrid, true, true, nil
-	default:
-		return "", false, false, E.New("unknown eBPF mode: ", mode)
+func normalizeEnablement(localOption, sharedOption *bool) (bool, bool, error) {
+	if localOption != nil || sharedOption != nil {
+		localEnabled := localOption != nil && *localOption
+		sharedEnabled := sharedOption != nil && *sharedOption
+		if !localEnabled && !sharedEnabled {
+			return false, false, E.New("local.enable or shared.enable must be enabled")
+		}
+		return localEnabled, sharedEnabled, nil
 	}
+	return true, false, nil
 }
 
 func validateFakeIPICMP(
@@ -364,7 +359,6 @@ const (
 )
 
 type normalizedDataPlanes struct {
-	mode            string
 	localEnabled    bool
 	localDataPlane  string
 	cgroupPath      string
@@ -373,7 +367,7 @@ type normalizedDataPlanes struct {
 }
 
 func normalizeDataPlanes(options LC.EBPF) (normalizedDataPlanes, error) {
-	mode, localEnabled, sharedEnabled, err := normalizeModeWithEnabled(options.Mode, options.Local.Enable, options.Shared.Enable)
+	localEnabled, sharedEnabled, err := normalizeEnablement(options.Local.Enable, options.Shared.Enable)
 	if err != nil {
 		return normalizedDataPlanes{}, err
 	}
@@ -385,7 +379,7 @@ func normalizeDataPlanes(options LC.EBPF) (normalizedDataPlanes, error) {
 	if err != nil {
 		return normalizedDataPlanes{}, err
 	}
-	return normalizedDataPlanes{mode: mode, localEnabled: localEnabled, localDataPlane: localDataPlane, cgroupPath: cgroupPath, sharedEnabled: sharedEnabled, sharedDataPlane: sharedDataPlane}, nil
+	return normalizedDataPlanes{localEnabled: localEnabled, localDataPlane: localDataPlane, cgroupPath: cgroupPath, sharedEnabled: sharedEnabled, sharedDataPlane: sharedDataPlane}, nil
 }
 
 func normalizeSharedDataPlane(options LC.EBPFShared) (string, error) {
@@ -417,35 +411,4 @@ func normalizeLocalDataPlane(options LC.EBPFLocal) (string, string, error) {
 		return "", "", E.New("local.cgroup_path must be absolute")
 	}
 	return dataPlane, filepath.Clean(options.CgroupPath), nil
-}
-
-func normalizeModeWithEnabled(mode string, localEnabled, sharedEnabled *bool) (string, bool, bool, error) {
-	if localEnabled != nil || sharedEnabled != nil {
-		if mode != "" {
-			return "", false, false, E.New("mode cannot be combined with local.enable or shared.enable")
-		}
-		local := localEnabled != nil && *localEnabled
-		shared := sharedEnabled != nil && *sharedEnabled
-		if !local && !shared {
-			return "", false, false, E.New("local.enable or shared.enable must be enabled")
-		}
-		switch {
-		case local && shared:
-			return ebpfModeHybrid, true, true, nil
-		case local:
-			return ebpfModeLocal, true, false, nil
-		default:
-			return ebpfModeShared, false, true, nil
-		}
-	}
-	switch mode {
-	case "", ebpfModeLocal:
-		return ebpfModeLocal, true, false, nil
-	case ebpfModeShared:
-		return ebpfModeShared, false, true, nil
-	case ebpfModeHybrid:
-		return ebpfModeHybrid, true, true, nil
-	default:
-		return "", false, false, E.New("unknown eBPF mode: ", mode)
-	}
 }
