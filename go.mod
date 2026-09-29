@@ -4,7 +4,6 @@ go 1.25.5
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0
-	github.com/cilium/ebpf v0.22.1-0.20260910105759-60e81073fdc6
 	github.com/coreos/go-iptables v0.8.0
 	github.com/dlclark/regexp2 v1.12.0
 	github.com/easytier/easytier/easytier-go v0.0.0-20260910071355-3d0c9c3ca5e2
@@ -66,7 +65,10 @@ require (
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb
 )
 
-require github.com/sagernet/sing v0.9.6-0.20260922013359-4ca3bebe0b8e // indirect
+require (
+	github.com/cilium/ebpf v0.22.1-0.20260910105759-60e81073fdc6 // indirect
+	github.com/sagernet/sing v0.9.6-0.20260927091435-fcc22e2b9f96 // indirect
+)
 
 // lastest version compatible with golang1.20
 require (
@@ -84,7 +86,7 @@ require (
 )
 
 require (
-	github.com/CHIZI-0618/sing-ebpf v0.1.0-alpha.10.0.20260925091429-c3e95b329d35
+	github.com/CHIZI-0618/sing-ebpf v0.1.0-alpha.11
 	github.com/RyuaNerin/go-krypto v1.3.0 // indirect
 	github.com/Yawning/aez v0.0.0-20211027044916-e49e68abd344 // indirect
 	github.com/ajg/form v1.7.1 // indirect
