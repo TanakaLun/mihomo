@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	ECommon "github.com/CHIZI-0618/sing-ebpf"
 	LC "github.com/metacubex/mihomo/listener/config"
@@ -36,6 +37,13 @@ const (
 	fakeIPICMPOff   = "off"
 	fakeIPICMPReply = "reply"
 )
+
+func normalizeUDPTimeout(seconds int64) time.Duration {
+	if seconds == 0 {
+		return 5 * time.Minute
+	}
+	return time.Duration(seconds) * time.Second
+}
 
 func normalizeFakeIPICMP(mode string) (bool, error) {
 	switch mode {
