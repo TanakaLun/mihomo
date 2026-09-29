@@ -53,6 +53,29 @@ Android ARM64 builds are covered by `.github/workflows/build-ebpf.yml`.
 
 ## Configuration
 
+> **BREAKING CHANGE**: the top-level `mode: local/shared/hybrid` and the
+> top-level `bypass-rule-set` keys were removed. Enabling now uses only
+> `local.enable` / `shared.enable`, and bypass rule sets are configured
+> per scope as `local.bypass-rule-set` / `shared.bypass-rule-set`.
+> Configurations that still set `mode` or a top-level `bypass-rule-set`
+> are rejected at startup with an "unknown field" style parse error.
+> Migration:
+>
+> ```diff
+>   listeners:
+>     - name: ebpf-inbound
+>       type: ebpf
+> -      mode: local
+> -      bypass-rule-set:
+> -        - geoip-cn
+>        local:
+> +        enable: true
+> +        bypass-rule-set:
+> +          - geoip-cn
+>        shared:
+> +        enable: false
+> ```
+
 Add an `ebpf` listener to the `listeners` section:
 
 ```yaml
