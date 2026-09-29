@@ -30,29 +30,19 @@ func (i *Inbound) startBypassRuleSets() error {
 	if !ok {
 		return E.New("tunnel does not expose rule providers")
 	}
-	register := func(started *bool, callback *io.Closer) error {
+	register := func(started *bool, callback *io.Closer) {
 		if *started {
-			return nil
+			return
 		}
 		*started = true
 		*callback = rp.RuleUpdateCallback().Register(i.updateBypassRuleSet)
-		return nil
 	}
-	registeredLocal, registeredShared := false, false
-	defer func() {
-		if !registeredLocal || !registeredShared {
-			i.stopBypassRuleSetsLocked()
-		}
-	}()
-	if err := register(&i.localBypassRuleSetStarted, &i.localBypassRuleSetCB); err != nil {
-		return err
-	}
-	registeredLocal = true
-	if err := register(&i.sharedBypassRuleSetStarted, &i.sharedBypassRuleSetCB); err != nil {
-		return err
-	}
-	registeredShared = true
+	register(&i.localBypassRuleSetStarted, &i.localBypassRuleSetCB)
+	register(&i.sharedBypassRuleSetStarted, &i.sharedBypassRuleSetCB)
 	if err := i.refreshBypassCIDRsLocked(); err != nil {
+		// Roll the registrations back on failure so a later retry does not
+		// leave the inbound marked started with callbacks still registered.
+		i.stopBypassRuleSetsLocked()
 		return err
 	}
 	return nil

@@ -24,13 +24,6 @@ func validateActionPolicyScope(policy commonEBPF.ActionPolicy) error {
 	return nil
 }
 
-// summary initialDestinations keeps the pass-only destination decisions so the
-// bypass rule-set refresh can extend them without recompiling the whole policy.
-// mihomo keeps these as plain prefixes on the Inbound (bypassCIDR).
-func (i *Inbound) localInitialDestinationPasses() []commonEBPF.CIDRDecision {
-	return destinationPassDecisionsOf(i.localPolicy.BypassPrivateAddress, i.localPolicy.IncludeUIDConfigured)
-}
-
 // eBPFPrivateDestinationPrefixes mirrors the data-plane safety/private ranges
 // as final pass decisions. The eBPF library receives only these decisions; it
 // does not interpret them as a private-address policy.
@@ -135,10 +128,6 @@ func (i *Inbound) compileActionPolicy() (commonEBPF.CompiledPolicy, error) {
 		return commonEBPF.CompiledPolicy{}, err
 	}
 	return commonEBPF.CompileActionPolicy(policy)
-}
-
-func destinationPassDecisionsOf(bypassPrivate, _ bool) []commonEBPF.CIDRDecision {
-	return nil
 }
 
 func appendPortDecisions(scope *commonEBPF.ActionScope, bypass []PortRange, dnsMode string, enableTCP, enableUDP bool) {

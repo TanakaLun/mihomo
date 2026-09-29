@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/metacubex/mihomo/adapter/inbound"
 	ECommon "github.com/CHIZI-0618/sing-ebpf"
+	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
@@ -74,32 +74,32 @@ type Inbound struct {
 	udpWarnings       udpWarningLimiters
 	interfaceWarnings interfaceWarningLimiters
 
-	cgroupBackend       *ECommon.CgroupBackend
-	cgroupBackendAccess sync.RWMutex
-	tcDataPlane         tcRuntime
-	tcDataPlaneAccess   sync.RWMutex
-	interfaceMonitor    tcInterfaceMonitor
-	networkStateInitialized  bool
-	networkStateDefault      string
-	networkStateAddresses    []netip.Addr
-	networkStateInterfaces   []string
-	lifecycleAccess     sync.Mutex
-	localRoutes         []*localRoute
+	cgroupBackend           *ECommon.CgroupBackend
+	cgroupBackendAccess     sync.RWMutex
+	tcDataPlane             tcRuntime
+	tcDataPlaneAccess       sync.RWMutex
+	interfaceMonitor        tcInterfaceMonitor
+	networkStateInitialized bool
+	networkStateDefault     string
+	networkStateAddresses   []netip.Addr
+	networkStateInterfaces  []string
+	lifecycleAccess         sync.Mutex
+	localRoutes             []*localRoute
 
 	sharedRewrite *sharedRewrite
 
-	bypassRuleSetAccess       sync.Mutex
-	localBypassRuleSet        []P.RuleProvider
-	localBypassRuleSetCB      io.Closer
-	localBypassRuleSetStarted bool
-	sharedBypassRuleSet       []P.RuleProvider
-	sharedBypassRuleSetCB     io.Closer
-	sharedBypassRuleSetStarted bool
-	bypassCIDR                []netip.Prefix
-	bypassRuleSetDirty        bool
-	bypassRuleSetNeedsRetry   bool
-	bypassRuleSetInconsistent bool
-	bypassRuleSetRetryCount   uint64
+	bypassRuleSetAccess          sync.Mutex
+	localBypassRuleSet           []P.RuleProvider
+	localBypassRuleSetCB         io.Closer
+	localBypassRuleSetStarted    bool
+	sharedBypassRuleSet          []P.RuleProvider
+	sharedBypassRuleSetCB        io.Closer
+	sharedBypassRuleSetStarted   bool
+	bypassCIDR                   []netip.Prefix
+	bypassRuleSetDirty           bool
+	bypassRuleSetNeedsRetry      bool
+	bypassRuleSetInconsistent    bool
+	bypassRuleSetRetryCount      uint64
 	bypassRuleSetPolicyVersion   uint64
 	bypassRuleSetExpectedVersion uint64
 	bypassRuleSetTC              bypassCIDRBackendVersion
@@ -315,6 +315,18 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 	if err = loadBypassRuleSets("shared", &inbound.sharedBypassRuleSet, options.Shared.BypassRuleSet); err != nil {
 		return nil, err
 	}
+	// sing-ebpf's cgroup data plane gates the destination-CIDR bypass map
+	// behind a flag that is derived once, at prepare time, from the static
+	// pass policy (only the private-address prefixes here). The dynamic
+	// rule-set decisions applied later never re-enable that flag, so with
+	// local.bypass-private-address disabled the rule-set CIDRs are written to
+	// the map but never consulted. Warn instead of silently doing nothing;
+	// local.data-plane=tc refreshes the flag on every update and is unaffected.
+	if localEnabled && localDataPlane == localDataPlaneCgroup && len(inbound.localBypassRuleSet) > 0 &&
+		options.Local.BypassPrivateAddress != nil && !*options.Local.BypassPrivateAddress {
+		log.Warnln("[EBPF] local.bypass-rule-set has no effect with local.data-plane=cgroup while local.bypass-private-address=false: " +
+			"the cgroup bypass gate stays off. Set local.bypass-private-address=true or use local.data-plane=tc")
+	}
 	inbound.udpTimeout = normalizeUDPTimeout(options.UDPTimeout)
 	if err := inbound.compilePolicy(); err != nil {
 		return nil, err
@@ -422,18 +434,18 @@ func (i *Inbound) start() error {
 	var dataPlane tcRuntime
 	if localTCEnabled || sharedSocketAssignEnabled {
 		backendConfig := ECommon.TCConfig{
-			ListenerPort:       i.listeners.selectedPort(),
-			EnableLocal:        localTCEnabled,
-			EnableShared:       sharedSocketAssignEnabled,
-			EnableIPv4:         true,
-			EnableLocalIPv6:    i.localIPv6,
-			EnableSharedIPv6:   i.sharedIPv6,
-			EnableTCP:          i.enableTCP,
-			EnableUDP:          i.enableUDP,
-			Policy:             i.compiledPolicy,
-			TrackProcess:       i.processTracker != nil,
-			ICMPEchoReply:      i.fakeIPICMPReply,
-			SelfBypass:         i.selfBypass,
+			ListenerPort:     i.listeners.selectedPort(),
+			EnableLocal:      localTCEnabled,
+			EnableShared:     sharedSocketAssignEnabled,
+			EnableIPv4:       true,
+			EnableLocalIPv6:  i.localIPv6,
+			EnableSharedIPv6: i.sharedIPv6,
+			EnableTCP:        i.enableTCP,
+			EnableUDP:        i.enableUDP,
+			Policy:           i.compiledPolicy,
+			TrackProcess:     i.processTracker != nil,
+			ICMPEchoReply:    i.fakeIPICMPReply,
+			SelfBypass:       i.selfBypass,
 		}
 		var err error
 		backend, err = ECommon.PrepareTC(backendConfig)
@@ -468,14 +480,19 @@ func (i *Inbound) start() error {
 		}
 		i.setTCDataPlane(dataPlane)
 	}
-	if err := i.startBypassRuleSets(); err != nil {
-		return E.Cause(err, "initialize TC eBPF bypass_rule_set")
-	}
 	if sharedRewriteEnabled {
 		i.sharedRewrite = newSharedRewrite(i, i.sharedOptions)
 		if err := i.sharedRewrite.Start(sharedInterfaces, hostAddresses); err != nil {
 			return err
 		}
+	}
+	// Apply the initial bypass_rule_set only after every data plane that can
+	// receive pass decisions exists. refreshBypassCIDRsLocked pushes decisions
+	// to the TC/cgroup backends and to the shared packet-rewrite backend, so
+	// running it before sharedRewrite is created would drop the shared rule-set
+	// CIDRs until the next rule-set update.
+	if err := i.startBypassRuleSets(); err != nil {
+		return E.Cause(err, "initialize eBPF bypass_rule_set")
 	}
 	if cgroupBackend := i.cgroupBackendInstance(); cgroupBackend != nil {
 		if err := cgroupBackend.Attach(); err != nil {
@@ -691,16 +708,16 @@ func (i *Inbound) takeCgroupBackend() *ECommon.CgroupBackend {
 
 func (i *Inbound) prepareCgroupBackend() error {
 	backendConfig := ECommon.CgroupConfig{
-		Path:          i.cgroupPath,
-		EnableTCP:     i.enableTCP,
-		EnableUDP:     i.enableUDP,
-		EnableIPv6:    i.cgroupIPv6Enabled(),
-		RedirectIPv4:  i.redirectIPv4Prefix,
-		RedirectIPv6:  i.redirectIPv6Prefix,
-		MapCapacity:   ECommon.DefaultCgroupMapCapacity(),
-		UDPTimeout:    i.udpTimeout,
-		Policy:        i.compiledPolicy,
-		SelfBypass:    i.selfBypass,
+		Path:         i.cgroupPath,
+		EnableTCP:    i.enableTCP,
+		EnableUDP:    i.enableUDP,
+		EnableIPv6:   i.cgroupIPv6Enabled(),
+		RedirectIPv4: i.redirectIPv4Prefix,
+		RedirectIPv6: i.redirectIPv6Prefix,
+		MapCapacity:  ECommon.DefaultCgroupMapCapacity(),
+		UDPTimeout:   i.udpTimeout,
+		Policy:       i.compiledPolicy,
+		SelfBypass:   i.selfBypass,
 	}
 	backend, err := ECommon.PrepareCgroup(backendConfig)
 	if err != nil {

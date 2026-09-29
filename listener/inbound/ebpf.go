@@ -2,6 +2,7 @@ package inbound
 
 import (
 	"context"
+	"fmt"
 
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
@@ -17,6 +18,12 @@ type EBPFOption struct {
 	FakeIPICMP string        `inbound:"fakeip-icmp,omitempty"`
 	Local      LC.EBPFLocal  `inbound:"local,omitempty"`
 	Shared     LC.EBPFShared `inbound:"shared,omitempty"`
+
+	// Removed top-level keys. They are kept only so the structure decoder
+	// captures them and NewEBPF can fail loudly; otherwise the decoder would
+	// silently drop them and bypass/enablement would silently stop working.
+	DeprecatedMode          string   `inbound:"mode,omitempty" json:"mode,omitempty"`
+	DeprecatedBypassRuleSet []string `inbound:"bypass-rule-set,omitempty" json:"bypass-rule-set,omitempty"`
 }
 
 func (o EBPFOption) Equal(config C.InboundConfig) bool {
@@ -31,6 +38,12 @@ type EBPF struct {
 }
 
 func NewEBPF(options *EBPFOption) (*EBPF, error) {
+	if options.DeprecatedMode != "" {
+		return nil, fmt.Errorf("ebpf inbound %q: top-level 'mode' is no longer supported; use local.enable / shared.enable", options.NameStr)
+	}
+	if len(options.DeprecatedBypassRuleSet) > 0 {
+		return nil, fmt.Errorf("ebpf inbound %q: top-level 'bypass-rule-set' is no longer supported; use local.bypass-rule-set / shared.bypass-rule-set", options.NameStr)
+	}
 	base, err := NewBase(&options.BaseOption)
 	if err != nil {
 		return nil, err

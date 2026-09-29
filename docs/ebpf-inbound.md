@@ -58,7 +58,8 @@ Android ARM64 builds are covered by `.github/workflows/build-ebpf.yml`.
 > `local.enable` / `shared.enable`, and bypass rule sets are configured
 > per scope as `local.bypass-rule-set` / `shared.bypass-rule-set`.
 > Configurations that still set `mode` or a top-level `bypass-rule-set`
-> are rejected at startup with an "unknown field" style parse error.
+> are rejected at startup with an explicit error (the keys are still
+> decoded so the mistake cannot be silently ignored).
 > Migration:
 >
 > ```diff
@@ -138,6 +139,18 @@ Field behavior:
 - `local.bypass-rule-set` / `shared.bypass-rule-set`: rule provider tags whose
   internal CIDRs are published as pass decisions to the matching local or
   shared data plane.
+  - Limitation: with `local.data-plane: cgroup`, the underlying sing-ebpf
+    backend enables the destination-CIDR bypass map only from the static pass
+    policy known when the backend is prepared (the private-address prefixes).
+    It does not re-derive that gate from the dynamic rule-set update, so a
+    configuration with `local.bypass-private-address: false` and only
+    `local.bypass-rule-set` writes the CIDRs to the map but the kernel never
+    consults them. Set `local.bypass-private-address: true` (the default) or
+    use `local.data-plane: tc`, which refreshes the gate on every update. A
+    startup warning is logged when this combination is detected.
+  - Rule-set CIDRs are applied on startup only after the rule providers have
+    loaded. Right after start there is a short window where the pass decisions
+    are not yet in place; the rule-set update callback fills them in.
 - `shared.data-plane`: `packet_rewrite` (default) or `socket_assign`.
 - `shared.interface`: the downstream interfaces to take over (hotspot). Must
   not be empty when shared is enabled, and must not contain `lo`.
