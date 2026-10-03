@@ -2,6 +2,7 @@ package dialer
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"syscall"
 )
@@ -15,18 +16,44 @@ type protectFn = func(ctx context.Context, network, address string, c syscall.Ra
 // bind/mark/TFO controls.
 var DefaultSocketProtect atomic.Value // holds protectFn or nil
 
-// RegisterSocketProtectFunc installs a socket-protect function. Pass nil to
-// disable. The previous function is replaced, not chained.
-func RegisterSocketProtectFunc(fn protectFn) {
+var (
+	socketProtectMu    sync.Mutex
+	socketProtectCount int
+)
+
+// RegisterSocketProtectFunc installs a socket-protect function and returns a
+// cleanup that removes exactly this registration. The active function is
+// single-slot (a later registration replaces the previous one), but the
+// registration is reference counted so closing one eBPF inbound no longer
+// strips the protection another inbound still relies on. Pass nil to install
+// nothing (the returned cleanup is a safe no-op).
+func RegisterSocketProtectFunc(fn protectFn) func() {
 	if fn == nil {
-		UnregisterSocketProtectFunc()
-		return
+		return func() {}
 	}
+	socketProtectMu.Lock()
+	defer socketProtectMu.Unlock()
+	socketProtectCount++
 	DefaultSocketProtect.Store(fn)
+	return func() {
+		socketProtectMu.Lock()
+		defer socketProtectMu.Unlock()
+		if socketProtectCount == 0 {
+			return
+		}
+		socketProtectCount--
+		if socketProtectCount == 0 {
+			DefaultSocketProtect.Store((protectFn)(nil))
+		}
+	}
 }
 
-// UnregisterSocketProtectFunc removes the active socket-protect function.
+// UnregisterSocketProtectFunc removes the active socket-protect function
+// unconditionally. Kept for callers that took over management themselves.
 func UnregisterSocketProtectFunc() {
+	socketProtectMu.Lock()
+	defer socketProtectMu.Unlock()
+	socketProtectCount = 0
 	DefaultSocketProtect.Store((protectFn)(nil))
 }
 

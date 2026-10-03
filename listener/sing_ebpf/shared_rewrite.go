@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/metacubex/mihomo/adapter/inbound"
 	ECommon "github.com/CHIZI-0618/sing-ebpf"
+	"github.com/metacubex/mihomo/adapter/inbound"
 	N "github.com/metacubex/mihomo/common/net"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
@@ -111,14 +111,14 @@ func (s *sharedRewrite) prepareBackend() (*ECommon.SharedPacketRewriteBackend, e
 	}
 	cgroupBackend := s.inbound.cgroupBackendInstance()
 	backend, err := ECommon.PrepareSharedPacketRewrite(cgroupBackend, ECommon.SharedPacketRewriteConfig{
-		ListenerPort:  s.listeners.selectedPort(),
-		EnableTCP:     s.inbound.enableTCP,
-		EnableUDP:     s.inbound.enableUDP,
-		RedirectIPv4:  s.inbound.redirectIPv4Prefix,
-		RedirectIPv6:  redirectIPv6,
-		Policy:        s.inbound.compiledPolicy,
-		MapCapacity:   s.mapCapacity,
-		UDPTimeout:    s.inbound.udpTimeout,
+		ListenerPort: s.listeners.selectedPort(),
+		EnableTCP:    s.inbound.enableTCP,
+		EnableUDP:    s.inbound.enableUDP,
+		RedirectIPv4: s.inbound.redirectIPv4Prefix,
+		RedirectIPv6: redirectIPv6,
+		Policy:       s.inbound.compiledPolicy,
+		MapCapacity:  s.mapCapacity,
+		UDPTimeout:   s.inbound.udpTimeout,
 	})
 	if err != nil {
 		return nil, err
@@ -174,12 +174,14 @@ func (s *sharedRewrite) Close() error {
 	}
 	s.lifecycleAccess.Lock()
 	defer s.lifecycleAccess.Unlock()
+	// Stop the janitor first so it never runs against a partially closed
+	// data plane; it watches the backend it would have to sweep.
+	s.stopFlowJanitor()
 	var closeErr error
 	if s.dataPlane != nil {
 		closeErr = s.dataPlane.Close()
 		s.dataPlane = nil
 	}
-	s.stopFlowJanitor()
 	backend := s.takeSharedBackend()
 	var backendErr error
 	if backend != nil {
@@ -376,6 +378,12 @@ func (s *sharedRewrite) runFlowJanitor(ctx context.Context, done chan<- struct{}
 		case <-releaseTimerChannel:
 		}
 		now := time.Now()
+		if sweepRequested {
+			// Drop exhausted userspace UDP client entries on the same cadence
+			// as the flow sweep. Kernel flow generations are reclaimed by
+			// SweepOrphanedFlows below and the kernel's own timeout.
+			s.sharedUDPClientTable.sweepIdleAt(now, s.inbound.udpTimeout)
+		}
 		if !sweepRequested {
 			_, flushErr := backend.FlushReleasedTCPFlows(now, sharedFlowReleaseFlushBudget)
 			if flushErr != nil {

@@ -109,7 +109,8 @@ type Inbound struct {
 	counters        ebpfCounters
 	fakeIPICMPReply bool
 
-	protectRegistered bool
+	protectRegistered       bool
+	unregisterSocketProtect func()
 
 	closeOnce sync.Once
 }
@@ -375,16 +376,35 @@ func joinStringList(values []string) string {
 }
 
 func (i *Inbound) start() error {
+	// Start the deadline-driven idle reclaim once. The same goroutine closes
+	// idle UDP reply sockets and drops exhausted UDP client-table entries, so
+	// neither grows beyond the kernel's own UDP timeout window.
+	pool := &i.udpReplySockets
+	pool.sweepStep = func(now time.Time, socketIdle time.Duration) (time.Time, bool) {
+		next1, ok1 := pool.sweepIdleAt(now, socketIdle)
+		next2, ok2 := i.udpClientTable.sweepIdleAt(now, i.udpTimeout)
+		if !ok1 {
+			return next2, ok2
+		}
+		if !ok2 {
+			return next1, ok1
+		}
+		if next2.Before(next1) {
+			return next2, ok2
+		}
+		return next1, ok1
+	}
+	pool.startSweeper(i.ctx)
 	if i.localEnabled && i.androidUIDOptions != nil {
 		if err := i.resolveAndroidUIDPolicy(); err != nil {
 			return E.Cause(err, "resolve Android UID policy")
 		}
 	}
 	if i.selfBypass != nil {
-		dialer.RegisterSocketProtectFunc(func(_ context.Context, network, address string, rawConn syscall.RawConn) error {
+		i.unregisterSocketProtect = dialer.RegisterSocketProtectFunc(func(_ context.Context, network, address string, rawConn syscall.RawConn) error {
 			return i.selfBypass.RegisterSocket(rawConn)
 		})
-		i.protectRegistered = true
+		i.protectRegistered = i.unregisterSocketProtect != nil
 	}
 	if i.localEnabled {
 		if err := i.startSelfBypass(); err != nil {
@@ -479,6 +499,12 @@ func (i *Inbound) start() error {
 			Priority:              i.tcPriority,
 		})
 		if err != nil {
+			// newTCRuntime returns a non-nil owner when startup and its rollback
+			// both fail; that owner must be closed here since Close() can only
+			// reclaim the runtime that setTCDataPlane registered.
+			if dataPlane != nil {
+				err = E.Errors(err, dataPlane.Close())
+			}
 			return err
 		}
 		i.setTCDataPlane(dataPlane)
@@ -742,8 +768,13 @@ func (i *Inbound) Close() error {
 	var closeErr error
 	i.closeOnce.Do(func() {
 		if i.protectRegistered {
-			dialer.UnregisterSocketProtectFunc()
+			if i.unregisterSocketProtect != nil {
+				i.unregisterSocketProtect()
+			} else {
+				dialer.UnregisterSocketProtectFunc()
+			}
 			i.protectRegistered = false
+			i.unregisterSocketProtect = nil
 		}
 		monitorErr := i.stopTCInterfaceMonitor()
 		i.stopBypassRuleSets()
@@ -764,6 +795,7 @@ func (i *Inbound) Close() error {
 			cgroupErr = cgroupBackend.Close()
 		}
 		listenerErr := i.listeners.close()
+		i.udpReplySockets.stopSweeper()
 		udpReplySocketErr := i.udpReplySockets.close()
 		routeErr := i.removeLocalRoutes()
 		var processTrackerErr error

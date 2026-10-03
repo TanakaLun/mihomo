@@ -51,6 +51,7 @@ type udpClientState struct {
 	closed          bool
 	cgroupDataPlane bool
 	cgroupOriginals map[netip.Addr]commonEBPF.OriginalDestination
+	lastActive      atomic.Int64 // UnixNano; any client-to-proxy or proxy-to-client UDP activity
 }
 
 type udpRedirectBinding struct {
@@ -85,6 +86,7 @@ func (t *udpClientTable) loadOrCreate(client netip.AddrPort) *udpClientState {
 		bindings:        make(map[netip.AddrPort]udpRedirectBinding),
 		cgroupOriginals: make(map[netip.Addr]commonEBPF.OriginalDestination),
 	}
+	state.lastActive.Store(time.Now().UnixNano())
 	shard.clients[client] = state
 	return state
 }
@@ -102,6 +104,7 @@ func (t *udpClientTable) cachedCgroupOriginal(client netip.AddrPort, redirectAdd
 
 func (t *udpClientTable) setCgroupBinding(client netip.AddrPort, original commonEBPF.OriginalDestination, redirectAddress netip.Addr) {
 	state := t.loadOrCreate(client)
+	state.lastActive.Store(time.Now().UnixNano())
 	state.access.Lock()
 	state.cgroupOriginals[redirectAddress] = original
 	state.socketCookie = original.SocketCookie
@@ -126,6 +129,7 @@ func (t *udpClientTable) setCgroupReplyBinding(client netip.AddrPort, expected *
 	if expected.closed || expected.replyAliasCount >= udpReplyAliasLimit {
 		return false
 	}
+	expected.lastActive.Store(time.Now().UnixNano())
 	expected.cgroupOriginals[redirectAddress] = commonEBPF.OriginalDestination{Destination: destination}
 	expected.cgroupDataPlane = true
 	expected.bindings[destination] = udpRedirectBinding{
@@ -207,6 +211,7 @@ func (t *udpClientTable) setDirectBinding(
 	socketCookie uint64,
 ) {
 	state := t.loadOrCreate(client)
+	state.lastActive.Store(time.Now().UnixNano())
 	state.access.Lock()
 	defer state.access.Unlock()
 	if len(sourceMAC) > 0 {
@@ -232,6 +237,7 @@ func (t *udpClientTable) setDirectReplyBinding(
 	if expected.closed {
 		return false
 	}
+	expected.lastActive.Store(time.Now().UnixNano())
 	if _, loaded := expected.bindings[destination]; loaded {
 		return true
 	}
@@ -271,6 +277,44 @@ func (s *udpClientState) isCgroupDataPlane() bool {
 	return s.cgroupDataPlane
 }
 
+// sweepIdleAt removes every client state that has not seen any UDP activity
+// for at least idleTimeout. Only the userspace mirror is dropped: the kernel
+// NAT/redirect entries carry their own UDPTimeout and self-expire, so no
+// kernel cleanup is issued here. Returns the earliest remaining expiry and
+// whether any candidate is left, so the caller can schedule the next pass.
+func (t *udpClientTable) sweepIdleAt(now time.Time, idleTimeout time.Duration) (time.Time, bool) {
+	deadline := now.Add(-idleTimeout).UnixNano()
+	var next time.Time
+	for index := range t.clientShards {
+		shard := &t.clientShards[index]
+		shard.access.Lock()
+		for client, state := range shard.clients {
+			lastActive := state.lastActive.Load()
+			if lastActive == 0 {
+				state.lastActive.Store(now.UnixNano())
+				continue
+			}
+			expires := time.Unix(0, lastActive).Add(idleTimeout)
+			if lastActive > deadline {
+				if next.IsZero() || expires.Before(next) {
+					next = expires
+				}
+				continue
+			}
+			delete(shard.clients, client)
+			state.access.Lock()
+			state.closed = true
+			state.cgroupDataPlane = false
+			state.replyAliasCount = 0
+			clear(state.bindings)
+			clear(state.cgroupOriginals)
+			state.access.Unlock()
+		}
+		shard.access.Unlock()
+	}
+	return next, !next.IsZero()
+}
+
 func sourcePacketInfo(address netip.Addr) []byte {
 	if address.Is4() {
 		return (&ipv4.ControlMessage{Src: net.IP(address.AsSlice())}).Marshal()
@@ -303,6 +347,11 @@ type udpReplySocketPool struct {
 	sweepDone    chan struct{}
 	capacity     int64         // test override; zero uses udpReplySocketCapacity
 	idleTimeout  time.Duration // test override; zero uses udpReplySocketIdleTimeout
+
+	// sweepStep, when set, is called by runSweeper instead of sweepIdleAt so
+	// the same deadline-driven goroutine can also reclaim the inbound's UDP
+	// client table. Set before startSweeper; never mutated afterwards.
+	sweepStep func(now time.Time, idle time.Duration) (time.Time, bool)
 }
 
 type udpReplySocketShard struct {
@@ -523,6 +572,12 @@ func (p *udpReplySocketPool) requestSweep() {
 
 func (p *udpReplySocketPool) runSweeper(ctx context.Context, wake <-chan struct{}, done chan<- struct{}) {
 	defer close(done)
+	sweep := p.sweepStep
+	if sweep == nil {
+		sweep = func(now time.Time, idle time.Duration) (time.Time, bool) {
+			return p.sweepIdleAt(now, idle)
+		}
+	}
 	timer := time.NewTimer(time.Hour)
 	if !timer.Stop() {
 		<-timer.C
@@ -536,7 +591,7 @@ func (p *udpReplySocketPool) runSweeper(ctx context.Context, wake <-chan struct{
 		case <-wake:
 		case <-timerChannel:
 		}
-		next, available := p.sweepIdleAt(time.Now(), p.socketIdleTimeout())
+		next, available := sweep(time.Now(), p.socketIdleTimeout())
 		if !available {
 			if !timer.Stop() {
 				select {
@@ -649,6 +704,7 @@ func (p *udpReplySocketPool) closeSockets() error {
 }
 
 func (s *udpClientState) redirectBinding(destination netip.AddrPort) (udpRedirectBinding, bool) {
+	s.lastActive.Store(time.Now().UnixNano())
 	s.access.RLock()
 	binding, loaded := s.bindings[destination]
 	s.access.RUnlock()

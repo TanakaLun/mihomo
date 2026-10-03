@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	ECommon "github.com/CHIZI-0618/sing-ebpf"
 )
@@ -33,6 +34,7 @@ type sharedUDPClientState struct {
 	bindings             map[netip.AddrPort]sharedUDPRedirectBinding
 	originals            map[netip.Addr]sharedUDPOriginalDestination
 	replyAliasCount      uint16
+	lastActive           atomic.Int64 // UnixNano; any client-to-proxy or proxy-to-client UDP activity
 }
 
 type sharedUDPRedirectBinding struct {
@@ -96,6 +98,7 @@ func (s *sharedUDPClientShard) loadOrCreateLocked(client netip.AddrPort) *shared
 		bindings:  make(map[netip.AddrPort]sharedUDPRedirectBinding),
 		originals: make(map[netip.Addr]sharedUDPOriginalDestination),
 	}
+	clientState.lastActive.Store(time.Now().UnixNano())
 	s.clients[client] = clientState
 	return clientState
 }
@@ -270,6 +273,7 @@ func (t *sharedUDPClientTable) setClientBinding(
 
 	clientState.access.Lock()
 	defer clientState.access.Unlock()
+	clientState.lastActive.Store(time.Now().UnixNano())
 	current, loaded = clientState.bindings[destination]
 	if loaded && current.address == redirectAddress && current.connected == connected &&
 		current.replyAlias == original.replyAlias {
@@ -369,6 +373,46 @@ func (t *sharedUDPClientTable) deleteClient(client netip.AddrPort, expectedState
 	return released
 }
 
+// sweepIdleAt drops every client state that has not seen UDP activity for at
+// least idleTimeout. Only the userspace mirror and its redirect reference
+// bookkeeping are released here (deleteShared); the kernel flow generations
+// the bindings point at are left to the flow janitor's SweepOrphanedFlows and
+// the kernel's own timeout, matching the local path. Returns the earliest
+// remaining expiry and whether a candidate is left.
+func (t *sharedUDPClientTable) sweepIdleAt(now time.Time, idleTimeout time.Duration) (time.Time, bool) {
+	type expiredKey struct {
+		client netip.AddrPort
+		state  *sharedUDPClientState
+	}
+	deadline := now.Add(-idleTimeout).UnixNano()
+	var next time.Time
+	for index := range t.clientShards {
+		shard := &t.clientShards[index]
+		shard.access.RLock()
+		var expired []expiredKey
+		for client, clientState := range shard.clients {
+			lastActive := clientState.lastActive.Load()
+			if lastActive == 0 {
+				clientState.lastActive.Store(now.UnixNano())
+				continue
+			}
+			expires := time.Unix(0, lastActive).Add(idleTimeout)
+			if lastActive > deadline {
+				if next.IsZero() || expires.Before(next) {
+					next = expires
+				}
+				continue
+			}
+			expired = append(expired, expiredKey{client: client, state: clientState})
+		}
+		shard.access.RUnlock()
+		for _, key := range expired {
+			t.deleteShared(key.client, key.state)
+		}
+	}
+	return next, !next.IsZero()
+}
+
 func (t *sharedUDPClientTable) retainRedirectLocked(reference sharedUDPRedirectReference) {
 	if t.redirectReferences == nil {
 		t.redirectReferences = make(map[sharedUDPRedirectReference]uint32)
@@ -390,6 +434,7 @@ func (t *sharedUDPClientTable) releaseRedirectLocked(reference sharedUDPRedirect
 }
 
 func (s *sharedUDPClientState) redirectBinding(destination netip.AddrPort) (sharedUDPRedirectBinding, bool) {
+	s.lastActive.Store(time.Now().UnixNano())
 	if binding := s.connectedBinding.Load(); binding != nil {
 		return *binding, true
 	}
