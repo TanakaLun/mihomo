@@ -328,18 +328,6 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 	if err = loadBypassRuleSets("shared", &inbound.sharedBypassRuleSet, options.Shared.BypassRuleSet); err != nil {
 		return nil, err
 	}
-	// sing-ebpf's cgroup data plane gates the destination-CIDR bypass map
-	// behind a flag that is derived once, at prepare time, from the static
-	// pass policy (only the private-address prefixes here). The dynamic
-	// rule-set decisions applied later never re-enable that flag, so with
-	// local.bypass-private-address disabled the rule-set CIDRs are written to
-	// the map but never consulted. Warn instead of silently doing nothing;
-	// local.data-plane=tc refreshes the flag on every update and is unaffected.
-	if localEnabled && localDataPlane == localDataPlaneCgroup && len(inbound.localBypassRuleSet) > 0 &&
-		options.Local.BypassPrivateAddress != nil && !*options.Local.BypassPrivateAddress {
-		log.Warnln("[EBPF] local.bypass-rule-set has no effect with local.data-plane=cgroup while local.bypass-private-address=false: " +
-			"the cgroup bypass gate stays off. Set local.bypass-private-address=true or use local.data-plane=tc")
-	}
 	inbound.udpTimeout, err = normalizeUDPTimeout(options.UDPTimeout)
 	if err != nil {
 		return nil, E.Cause(err, "parse udp-timeout")

@@ -158,15 +158,6 @@ Field behavior:
 - `local.bypass-rule-set` / `shared.bypass-rule-set`: rule provider tags whose
   internal CIDRs are published as pass decisions to the matching local or
   shared data plane.
-  - Limitation: with `local.data-plane: cgroup`, the underlying sing-ebpf
-    backend enables the destination-CIDR bypass map only from the static pass
-    policy known when the backend is prepared (the private-address prefixes).
-    It does not re-derive that gate from the dynamic rule-set update, so a
-    configuration with `local.bypass-private-address: false` and only
-    `local.bypass-rule-set` writes the CIDRs to the map but the kernel never
-    consults them. Set `local.bypass-private-address: true` (the default) or
-    use `local.data-plane: tc`, which refreshes the gate on every update. A
-    startup warning is logged when this combination is detected.
   - Rule-set CIDRs are applied on startup only after the rule providers have
     loaded. Right after start there is a short window where the pass decisions
     are not yet in place; the rule-set update callback fills them in.
