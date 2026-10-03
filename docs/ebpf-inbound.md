@@ -92,6 +92,8 @@ listeners:
       dns-mode: hijack        # hijack (default), respect_policy, or off
       ipv6: true
       bypass-private-address: true
+      bypass-exclude:
+        - 100.64.0.0/10   # keep intercepting even with bypass-private-address
       bypass-rule-set:
         - geoip-cn
       include-uid: []
@@ -110,6 +112,8 @@ listeners:
       dns-mode: hijack
       ipv6: true
       bypass-private-address: true
+      bypass-exclude:
+        - 100.64.0.0/10
       bypass-rule-set:
         - geoip-cn
       include-source-cidr: []
@@ -136,6 +140,21 @@ Field behavior:
   or `off`. `hijack` force-rewrites port 53; `off` always passes 53.
 - `local.bypass-private-address`: private/groupcast/link-local destinations
   keep their real IP and pass in kernel. Default true.
+- `local.bypass-exclude` / `shared.bypass-exclude`: CIDR prefixes that are
+  force-intercepted ahead of every bypass decision. Traffic to these prefixes
+  is always redirected to the proxy, even when `bypass-private-address`,
+  `bypass-port`, or another bypass rule would otherwise let it pass in kernel.
+  The kernel-level force-intercept check runs before all bypass checks.
+  At most one IPv4 and one IPv6 prefix is accepted per scope (mirroring the
+  backend's single force-intercept slot per address family). A prefix that
+  overlaps the DNS fake-ip range is rejected at startup because fake-ip already
+  occupies that slot; use `redir-host` DNS mode when you need bypass-exclude.
+  Typical use: keep a VPN/CGNAT range like Tailscale `100.64.0.0/10`
+  intercepted so it can be routed through a proxy node.
+  > **Tailscale example**: with `local.bypass-private-address: true`, tailnet
+  > CGNAT addresses (100.64.0.0/10, and IPv6 fd7a:115c:a1e0::/48) would be
+  > passed in kernel and never reach a `tailscale` outbound node. Add them to
+  > `local.bypass-exclude` to force them into the proxy path.
 - `local.bypass-rule-set` / `shared.bypass-rule-set`: rule provider tags whose
   internal CIDRs are published as pass decisions to the matching local or
   shared data plane.

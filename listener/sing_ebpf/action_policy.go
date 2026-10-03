@@ -24,6 +24,40 @@ func validateActionPolicyScope(policy commonEBPF.ActionPolicy) error {
 	return nil
 }
 
+// validateBypassExcludeConflicts rejects bypass-exclude prefixes that would
+// collide with the fake-ip force-intercept slot. The backend's force-intercept
+// is a single prefix per address family; fake-ip occupies the same slot, so a
+// bypass-exclude prefix for the same family would make the compiled policy
+// ambiguous (multiple intercept prefixes) or be silently ignored.
+func (i *Inbound) validateBypassExcludeConflicts() error {
+	conflict := func(name, family string, bypassExclude, fakeIP netip.Prefix) error {
+		if fakeIP.IsValid() && bypassExclude.IsValid() {
+			return E.New(name, " bypass_exclude ", bypassExclude, " conflicts with the ", family,
+				" fake-ip force-intercept prefix ", fakeIP, "; use redir-host DNS mode or drop one of them")
+		}
+		return nil
+	}
+	for _, prefix := range i.localBypassExclude {
+		if prefix.Addr().Is4() {
+			if err := conflict("local", "IPv4", prefix, i.fakeIPIPv4Prefix); err != nil {
+				return err
+			}
+		} else if err := conflict("local", "IPv6", prefix, i.fakeIPIPv6Prefix); err != nil {
+			return err
+		}
+	}
+	for _, prefix := range i.sharedBypassExclude {
+		if prefix.Addr().Is4() {
+			if err := conflict("shared", "IPv4", prefix, i.fakeIPIPv4Prefix); err != nil {
+				return err
+			}
+		} else if err := conflict("shared", "IPv6", prefix, i.fakeIPIPv6Prefix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // eBPFPrivateDestinationPrefixes mirrors the data-plane safety/private ranges
 // as final pass decisions. The eBPF library receives only these decisions; it
 // does not interpret them as a private-address policy.
@@ -44,6 +78,9 @@ var eBPFPrivateDestinationPrefixes = []netip.Prefix{
 }
 
 func (i *Inbound) compileActionPolicy() (commonEBPF.CompiledPolicy, error) {
+	if err := i.validateBypassExcludeConflicts(); err != nil {
+		return commonEBPF.CompiledPolicy{}, err
+	}
 	policy := commonEBPF.ActionPolicy{
 		EnableTCP: i.enableTCP,
 		EnableUDP: i.enableUDP,
@@ -73,6 +110,11 @@ func (i *Inbound) compileActionPolicy() (commonEBPF.CompiledPolicy, error) {
 				Prefix: prefix, Action: commonEBPF.DecisionPass,
 			})
 		}
+	}
+	for _, prefix := range i.localBypassExclude {
+		policy.Local.DestinationCIDR = append(policy.Local.DestinationCIDR, commonEBPF.CIDRDecision{
+			Prefix: prefix, Action: commonEBPF.DecisionIntercept,
+		})
 	}
 	if i.fakeIPIPv4Prefix.IsValid() {
 		policy.Local.DestinationCIDR = append(policy.Local.DestinationCIDR, commonEBPF.CIDRDecision{
@@ -112,6 +154,11 @@ func (i *Inbound) compileActionPolicy() (commonEBPF.CompiledPolicy, error) {
 				Prefix: prefix, Action: commonEBPF.DecisionPass,
 			})
 		}
+	}
+	for _, prefix := range i.sharedBypassExclude {
+		policy.Shared.DestinationCIDR = append(policy.Shared.DestinationCIDR, commonEBPF.CIDRDecision{
+			Prefix: prefix, Action: commonEBPF.DecisionIntercept,
+		})
 	}
 	if i.fakeIPIPv4Prefix.IsValid() {
 		policy.Shared.DestinationCIDR = append(policy.Shared.DestinationCIDR, commonEBPF.CIDRDecision{

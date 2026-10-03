@@ -49,6 +49,8 @@ type Inbound struct {
 	localIPv6           bool
 	sharedIPv6          bool
 	sharedBypassPrivate bool
+	localBypassExclude  []netip.Prefix
+	sharedBypassExclude []netip.Prefix
 	tcPriority          uint16
 	localPolicy         localUIDPolicy
 	compiledPolicy      ECommon.CompiledPolicy
@@ -204,6 +206,14 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 	if err != nil {
 		return nil, err
 	}
+	localBypassExclude, err := normalizeBypassExclude("local.bypass_exclude", options.Local.BypassExclude)
+	if err != nil {
+		return nil, err
+	}
+	sharedBypassExclude, err := normalizeBypassExclude("shared.bypass_exclude", options.Shared.BypassExclude)
+	if err != nil {
+		return nil, err
+	}
 	sharedIncludeMAC, err := parseSharedMACAddresses(
 		"include_mac_address",
 		sharedOptions.IncludeMACAddress,
@@ -246,6 +256,8 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 		localIPv6:           localEnabled && enabledByDefault(options.Local.IPv6),
 		sharedIPv6:          sharedEnabled && enabledByDefault(options.Shared.IPv6),
 		sharedBypassPrivate: options.Shared.BypassPrivateAddress == nil || *options.Shared.BypassPrivateAddress,
+		localBypassExclude:  localBypassExclude,
+		sharedBypassExclude: sharedBypassExclude,
 		localBypassPort:     localBypassPort,
 		sharedBypassPort:    sharedBypassPort,
 		tcPriority:          options.TCPriority,

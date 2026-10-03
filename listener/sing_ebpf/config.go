@@ -121,6 +121,9 @@ func validateLocalOptions(enabled bool, options LC.EBPFLocal) error {
 	if options.BypassPrivateAddress != nil {
 		return E.New("local.bypass_private_address requires local or hybrid mode")
 	}
+	if len(options.BypassExclude) > 0 {
+		return E.New("local.bypass_exclude requires local or hybrid mode")
+	}
 	if len(options.IncludeUID) > 0 || len(options.IncludeUIDRange) > 0 ||
 		len(options.ExcludeUID) > 0 || len(options.ExcludeUIDRange) > 0 ||
 		len(options.IncludeAndroidUser) > 0 || len(options.IncludePackage) > 0 ||
@@ -309,6 +312,41 @@ func parsePortRanges(name string, ports []uint16, ranges []string) ([]PortRange,
 	return merged, nil
 }
 
+// normalizeBypassExclude masks and validates the bypass-exclude prefixes that
+// are force-intercepted ahead of any bypass decision. The backend's
+// force-intercept slot is a single prefix per address family, so at most one
+// IPv4 and one IPv6 prefix are accepted.
+func normalizeBypassExclude(name string, prefixes []netip.Prefix) ([]netip.Prefix, error) {
+	if len(prefixes) == 0 {
+		return nil, nil
+	}
+	result := make([]netip.Prefix, 0, len(prefixes))
+	seenIPv4 := netip.Prefix{}
+	seenIPv6 := netip.Prefix{}
+	for _, prefix := range prefixes {
+		if !prefix.IsValid() {
+			return nil, E.New(name, " contains an invalid prefix")
+		}
+		prefix = prefix.Masked()
+		if prefix.Addr().Is4In6() {
+			return nil, E.New(name, " must not contain an IPv4-mapped IPv6 prefix: ", prefix)
+		}
+		if prefix.Addr().Is4() {
+			if seenIPv4.IsValid() {
+				return nil, E.New(name, " accepts at most one IPv4 prefix; got both ", seenIPv4, " and ", prefix)
+			}
+			seenIPv4 = prefix
+		} else {
+			if seenIPv6.IsValid() {
+				return nil, E.New(name, " accepts at most one IPv6 prefix; got both ", seenIPv6, " and ", prefix)
+			}
+			seenIPv6 = prefix
+		}
+		result = append(result, prefix)
+	}
+	return result, nil
+}
+
 func normalizeSharedOptions(options LC.EBPFShared) (LC.EBPFShared, error) {
 	if len(options.Interface) == 0 {
 		return LC.EBPFShared{}, E.New("shared.interface must not be empty")
@@ -345,6 +383,9 @@ func validateSharedOptions(enabled bool, options LC.EBPFShared) error {
 	}
 	if options.BypassPrivateAddress != nil {
 		return E.New("shared.bypass_private_address requires shared or hybrid mode")
+	}
+	if len(options.BypassExclude) > 0 {
+		return E.New("shared.bypass_exclude requires shared or hybrid mode")
 	}
 	if len(options.Interface) > 0 {
 		return E.New("shared.interface requires shared or hybrid mode")

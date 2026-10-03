@@ -155,6 +155,7 @@ func TestEnableViaStructureDecoder(t *testing.T) {
 			"data-plane":       "cgroup",
 			"ipv6":             true,
 			"bypass-rule-set":  []string{"geoip-cn"},
+			"bypass-exclude":   []string{"100.64.0.0/10"},
 		},
 		"shared": map[string]any{
 			"enable":          true,
@@ -174,6 +175,9 @@ func TestEnableViaStructureDecoder(t *testing.T) {
 	}
 	if len(o.Local.BypassRuleSet) != 1 || o.Local.BypassRuleSet[0] != "geoip-cn" {
 		t.Fatalf("local.bypass-rule-set not decoded: %+v", o.Local)
+	}
+	if len(o.Local.BypassExclude) != 1 || o.Local.BypassExclude[0].String() != "100.64.0.0/10" {
+		t.Fatalf("local.bypass-exclude not decoded: %+v", o.Local.BypassExclude)
 	}
 	if o.Shared.Enable == nil || !*o.Shared.Enable {
 		t.Fatalf("shared.enable not decoded: %+v", o.Shared)
