@@ -32,7 +32,7 @@ func validateActionPolicyScope(policy commonEBPF.ActionPolicy) error {
 func (i *Inbound) validateBypassExcludeConflicts() error {
 	conflict := func(name, family string, bypassExclude, fakeIP netip.Prefix) error {
 		if fakeIP.IsValid() && bypassExclude.IsValid() {
-			return E.New(name, " bypass_exclude ", bypassExclude, " conflicts with the ", family,
+			return E.New(name, " bypass-exclude ", bypassExclude, " conflicts with the ", family,
 				" fake-ip force-intercept prefix ", fakeIP, "; use redir-host DNS mode or drop one of them")
 		}
 		return nil

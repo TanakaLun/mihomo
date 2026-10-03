@@ -206,11 +206,11 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 	if err != nil {
 		return nil, err
 	}
-	localBypassExclude, err := normalizeBypassExclude("local.bypass_exclude", options.Local.BypassExclude)
+	localBypassExclude, err := normalizeBypassExclude("local.bypass-exclude", options.Local.BypassExclude)
 	if err != nil {
 		return nil, err
 	}
-	sharedBypassExclude, err := normalizeBypassExclude("shared.bypass_exclude", options.Shared.BypassExclude)
+	sharedBypassExclude, err := normalizeBypassExclude("shared.bypass-exclude", options.Shared.BypassExclude)
 	if err != nil {
 		return nil, err
 	}

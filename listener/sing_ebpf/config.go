@@ -122,7 +122,7 @@ func validateLocalOptions(enabled bool, options LC.EBPFLocal) error {
 		return E.New("local.bypass_private_address requires local or hybrid mode")
 	}
 	if len(options.BypassExclude) > 0 {
-		return E.New("local.bypass_exclude requires local or hybrid mode")
+		return E.New("local.bypass-exclude requires local or hybrid mode")
 	}
 	if len(options.IncludeUID) > 0 || len(options.IncludeUIDRange) > 0 ||
 		len(options.ExcludeUID) > 0 || len(options.ExcludeUIDRange) > 0 ||
@@ -328,8 +328,8 @@ func normalizeBypassExclude(name string, prefixes []netip.Prefix) ([]netip.Prefi
 			return nil, E.New(name, " contains an invalid prefix")
 		}
 		prefix = prefix.Masked()
-		if prefix.Addr().Is4In6() {
-			return nil, E.New(name, " must not contain an IPv4-mapped IPv6 prefix: ", prefix)
+		if prefix.Addr().Is4In6() && prefix.Bits() >= 96 {
+			prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96).Masked()
 		}
 		if prefix.Addr().Is4() {
 			if seenIPv4.IsValid() {
@@ -385,7 +385,7 @@ func validateSharedOptions(enabled bool, options LC.EBPFShared) error {
 		return E.New("shared.bypass_private_address requires shared or hybrid mode")
 	}
 	if len(options.BypassExclude) > 0 {
-		return E.New("shared.bypass_exclude requires shared or hybrid mode")
+		return E.New("shared.bypass-exclude requires shared or hybrid mode")
 	}
 	if len(options.Interface) > 0 {
 		return E.New("shared.interface requires shared or hybrid mode")
