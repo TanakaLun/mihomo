@@ -119,8 +119,23 @@ func (i *Inbound) refreshBypassCIDRsLocked() error {
 		}
 		return decisions
 	}
-	localDecisions := decisions(localPrefixes)
-	sharedDecisions := decisions(sharedPrefixes)
+	// The kernel pass set is the union of the static private-address ranges
+	// and the dynamic rule-set prefixes. sing-ebpf replaces the destination
+	// pass map transactionally and derives the per-family bypass gate from
+	// what it receives, so pass the full set (matching sing-box's
+	// combineDestinationDecisions) instead of only the rule-set CIDRs. The
+	// DNS fake-ip set above stays rule-set-only: private addresses are not
+	// domains and never need a real-IP resolution.
+	localPassPrefixes := localPrefixes
+	if i.localPolicy.BypassPrivateAddress {
+		localPassPrefixes = append(append([]netip.Prefix(nil), eBPFPrivateDestinationPrefixes...), localPrefixes...)
+	}
+	sharedPassPrefixes := sharedPrefixes
+	if i.sharedBypassPrivate {
+		sharedPassPrefixes = append(append([]netip.Prefix(nil), eBPFPrivateDestinationPrefixes...), sharedPrefixes...)
+	}
+	localDecisions := decisions(localPassPrefixes)
+	sharedDecisions := decisions(sharedPassPrefixes)
 	if backend := i.tcBackend(); backend != nil {
 		if i.localTCEnabled() {
 			if _, err := backend.UpdateLocalDestinationDecisions(localDecisions); err != nil {

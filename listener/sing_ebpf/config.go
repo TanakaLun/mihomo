@@ -34,11 +34,14 @@ const (
 	fakeIPICMPReply = "reply"
 )
 
-func normalizeUDPTimeout(seconds int64) time.Duration {
+func normalizeUDPTimeout(seconds int64) (time.Duration, error) {
 	if seconds == 0 {
-		return 5 * time.Minute
+		return 5 * time.Minute, nil
 	}
-	return time.Duration(seconds) * time.Second
+	if seconds < 5 {
+		return 0, E.New("eBPF UDP timeout must be at least 5s: ", seconds)
+	}
+	return time.Duration(seconds) * time.Second, nil
 }
 
 func normalizeFakeIPICMP(mode string) (bool, error) {

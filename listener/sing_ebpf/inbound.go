@@ -327,7 +327,10 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 		log.Warnln("[EBPF] local.bypass-rule-set has no effect with local.data-plane=cgroup while local.bypass-private-address=false: " +
 			"the cgroup bypass gate stays off. Set local.bypass-private-address=true or use local.data-plane=tc")
 	}
-	inbound.udpTimeout = normalizeUDPTimeout(options.UDPTimeout)
+	inbound.udpTimeout, err = normalizeUDPTimeout(options.UDPTimeout)
+	if err != nil {
+		return nil, E.Cause(err, "parse udp-timeout")
+	}
 	if err := inbound.compilePolicy(); err != nil {
 		return nil, err
 	}
