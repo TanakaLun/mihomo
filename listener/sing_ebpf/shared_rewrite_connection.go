@@ -9,8 +9,8 @@ import (
 	"net/netip"
 	"sync"
 
-	"github.com/metacubex/mihomo/adapter/inbound"
 	ECommon "github.com/CHIZI-0618/sing-ebpf"
+	"github.com/metacubex/mihomo/adapter/inbound"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
@@ -47,7 +47,7 @@ func (s *sharedRewrite) NewConnection(conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	if s.inbound.hijackDNS(original.Destination) {
+	if hijackDNS(s.inbound.sharedDNSMode, original.Destination) {
 		go s.relayTCPDNS(conn, flow)
 		return
 	}
@@ -109,7 +109,7 @@ func (s *sharedRewrite) NewPacket(data []byte, oob []byte, source netip.AddrPort
 		}
 		s.releaseFlows(released)
 	}
-	if s.inbound.hijackDNS(original.Destination) {
+	if hijackDNS(s.inbound.sharedDNSMode, original.Destination) {
 		clientState := s.sharedUDPClientTable.loadOrCreate(client)
 		s.relaySharedUDPDNS(data, client, clientState, original.Destination)
 		return

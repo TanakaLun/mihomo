@@ -9,8 +9,8 @@ import (
 	"net/netip"
 	"syscall"
 
-	"github.com/metacubex/mihomo/adapter/inbound"
 	ECommon "github.com/CHIZI-0618/sing-ebpf"
+	"github.com/metacubex/mihomo/adapter/inbound"
 	N "github.com/metacubex/mihomo/common/net"
 	C "github.com/metacubex/mihomo/constant"
 
@@ -62,7 +62,7 @@ func (i *Inbound) newCgroupTCPConnection(conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	if i.hijackDNS(original.Destination) {
+	if hijackDNS(i.localDNSMode, original.Destination) {
 		go i.relayTCPDNS(conn)
 		return
 	}
@@ -95,7 +95,7 @@ func (i *Inbound) newTCConnection(backend *ECommon.TCBackend, conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	if i.hijackDNS(destination) {
+	if hijackDNS(i.localDNSMode, destination) {
 		go i.relayTCPDNS(conn)
 		return
 	}
@@ -154,7 +154,7 @@ func (i *Inbound) newCgroupPacket(data []byte, oob []byte, source netip.AddrPort
 		}
 		i.udpClientTable.setCgroupBinding(client, original, redirectAddress)
 	}
-	if i.hijackDNS(original.Destination) {
+	if hijackDNS(i.localDNSMode, original.Destination) {
 		clientState := i.udpClientTable.loadOrCreate(client)
 		i.relayUDPDNS(data, client, clientState, original.Destination)
 		return
@@ -186,7 +186,7 @@ func (i *Inbound) newTCPacket(backend *ECommon.TCBackend, data []byte, oob []byt
 		sourceMAC = net.HardwareAddr(assignment.SourceMAC[:])
 	}
 	i.udpClientTable.setDirectBinding(client, destination, sourceMAC, assignment.SocketCookie)
-	if i.hijackDNS(destination) {
+	if hijackDNS(i.localDNSMode, destination) {
 		clientState := i.udpClientTable.loadOrCreate(client)
 		i.relayUDPDNS(data, client, clientState, destination)
 		return
@@ -219,8 +219,12 @@ func (i *Inbound) forwardLocalUDP(data []byte, client netip.AddrPort, destinatio
 	i.tunnel.HandleUDPPacket(packet, metadata)
 }
 
-func (i *Inbound) hijackDNS(destination netip.AddrPort) bool {
-	return i.localDNSMode != dnsModeOff && destination.Port() == 53
+// hijackDNS reports whether a port-53 destination should be relayed into
+// mihomo's own resolver pipeline for the given data plane's dns-mode. Each
+// data plane carries its own dns-mode (local.dns-mode vs shared.dns-mode), so
+// the caller passes the mode of the plane that intercepted the traffic.
+func hijackDNS(dnsMode string, destination netip.AddrPort) bool {
+	return dnsMode != dnsModeOff && destination.Port() == 53
 }
 
 type udpPacket struct {
