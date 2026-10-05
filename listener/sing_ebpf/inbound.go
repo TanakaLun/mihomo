@@ -380,6 +380,10 @@ func (i *Inbound) start() error {
 	// idle UDP reply sockets and drops exhausted UDP client-table entries, so
 	// neither grows beyond the kernel's own UDP timeout window.
 	pool := &i.udpReplySockets
+	// New cgroup clients add table entries but never a reply socket, so wake
+	// the sweeper directly or it parks forever with an empty table and the
+	// client table grows without bound.
+	i.udpClientTable.wake = pool.requestSweep
 	pool.sweepStep = func(now time.Time, socketIdle time.Duration) (time.Time, bool) {
 		next1, ok1 := pool.sweepIdleAt(now, socketIdle)
 		next2, ok2 := i.udpClientTable.sweepIdleAt(now, i.udpTimeout)

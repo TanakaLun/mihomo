@@ -35,6 +35,11 @@ var errUDPReplySocketCapacity = errors.New("UDP eBPF reply socket pool is at cap
 
 type udpClientTable struct {
 	clientShards [udpClientShardCount]udpClientShard
+
+	// wake, when set, nudges the deadline-driven idle sweeper goroutine to run
+	// a pass. The cgroup data plane never creates reply sockets, so nothing
+	// else would ever wake the sweeper once it parked with an empty table.
+	wake func()
 }
 
 type udpClientShard struct {
@@ -88,6 +93,9 @@ func (t *udpClientTable) loadOrCreate(client netip.AddrPort) *udpClientState {
 	}
 	state.lastActive.Store(time.Now().UnixNano())
 	shard.clients[client] = state
+	if t.wake != nil {
+		t.wake()
+	}
 	return state
 }
 
