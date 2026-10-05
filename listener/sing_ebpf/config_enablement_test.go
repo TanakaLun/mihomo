@@ -79,20 +79,37 @@ func TestEnablementBothDisabled(t *testing.T) {
 	}
 }
 
-func TestValidateSharedDisabledNoConfig(t *testing.T) {
-	// local only with empty shared block should NOT error
-	var shared LC.EBPFShared
-	if err := validateSharedOptions(false, shared); err != nil {
-		t.Fatalf("empty shared config with shared disabled should pass: %v", err)
+func TestDisabledScopeDataPlaneInert(t *testing.T) {
+	// A disabled data plane is inert: its block (data-plane, interface,
+	// dns-mode, ...) is ignored rather than validated, so a kept-as-template
+	// disabled scope cannot reject startup.
+	sel, err := normalizeDataPlanes(LC.EBPF{
+		Local: LC.EBPFLocal{Enable: boolPtr(true)},
+		Shared: LC.EBPFShared{
+			Enable:    boolPtr(false),
+			DataPlane: "bogus",
+			Interface: []string{"wlan2"},
+			DNSMode:   "hijack",
+		},
+	})
+	if err != nil {
+		t.Fatalf("disabled shared scope with populated template should pass: %v", err)
 	}
-}
+	if sel.sharedEnabled {
+		t.Fatal("shared.enable=false must leave shared disabled")
+	}
+	if sel.sharedDataPlane != sharedDataPlanePacketRewrite {
+		t.Fatalf("disabled shared data plane default = %q, want packet_rewrite", sel.sharedDataPlane)
+	}
 
-func TestValidateSharedDisabledWithIPv6(t *testing.T) {
-	// local only but shared.ipv6 set -> error (matches upstream intent)
-	shared := LC.EBPFShared{IPv6: boolPtr(true)}
-	if err := validateSharedOptions(false, shared); err == nil {
-		t.Fatal("shared.ipv6 with shared disabled should error")
+	phantom, err := normalizeDataPlanes(LC.EBPF{
+		Local:  LC.EBPFLocal{Enable: boolPtr(true), DataPlane: "bogus"},
+		Shared: LC.EBPFShared{Enable: boolPtr(true), DataPlane: "also-bogus"},
+	})
+	if err == nil {
+		t.Fatal("enabled scopes must still validate their data-plane value")
 	}
+	_ = phantom
 }
 
 func TestEnableJSONTag(t *testing.T) {
@@ -124,7 +141,9 @@ func TestEnableJSONTag(t *testing.T) {
 		{
 			"shared bypass rule set",
 			`{"shared":{"bypass-rule-set":["geoip-cn"]}}`,
-			func(e LC.EBPF) bool { return len(e.Shared.BypassRuleSet) == 1 && e.Shared.BypassRuleSet[0] == "geoip-cn" },
+			func(e LC.EBPF) bool {
+				return len(e.Shared.BypassRuleSet) == 1 && e.Shared.BypassRuleSet[0] == "geoip-cn"
+			},
 		},
 	}
 	for _, tc := range cases {
@@ -151,11 +170,11 @@ func TestEnableViaStructureDecoder(t *testing.T) {
 	}
 	mapping := map[string]any{
 		"local": map[string]any{
-			"enable":           true,
-			"data-plane":       "cgroup",
-			"ipv6":             true,
-			"bypass-rule-set":  []string{"geoip-cn"},
-			"bypass-exclude":   []string{"100.64.0.0/10"},
+			"enable":          true,
+			"data-plane":      "cgroup",
+			"ipv6":            true,
+			"bypass-rule-set": []string{"geoip-cn"},
+			"bypass-exclude":  []string{"100.64.0.0/10"},
 		},
 		"shared": map[string]any{
 			"enable":          true,

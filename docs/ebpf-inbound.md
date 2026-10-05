@@ -130,6 +130,9 @@ Field behavior:
   `local.enable: true` enables only local interception, `shared.enable: true`
   enables only shared interception, enabling both enables hybrid. With no
   explicit enablement, local interception is enabled by default (shared off).
+  A disabled scope is fully inert: its option block (data-plane, dns-mode,
+  interface, bypass-rules, ...) is ignored and never validated, so a
+  kept-as-template disabled scope cannot reject startup.
 - `network`: `tcp`, `udp`, or both. Defaults to both when omitted.
 - `udp-timeout`: UDP timeout in seconds. Omitted or zero uses 300 seconds.
 - `local.data-plane`: `cgroup` (default) or `tc`. `cgroup` intercepts inner

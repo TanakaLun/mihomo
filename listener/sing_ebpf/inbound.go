@@ -165,31 +165,39 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 		return nil, err
 	}
 	localEnabled, sharedEnabled := selection.localEnabled, selection.sharedEnabled
-	if err = validateLocalOptions(localEnabled, options.Local); err != nil {
-		return nil, err
-	}
-	if err = validateSharedOptions(sharedEnabled, options.Shared); err != nil {
-		return nil, err
-	}
-	if err = validateAndroidUIDOptions(runtime.GOOS, options.Local); err != nil {
-		return nil, err
-	}
 	localDataPlane, cgroupPath, sharedDataPlane := selection.localDataPlane, selection.cgroupPath, selection.sharedDataPlane
-	localDNSMode, err := normalizeDNSMode(options.Local.DNSMode)
-	if err != nil {
-		return nil, E.Cause(err, "parse local.dns_mode")
+	// A disabled data plane is inert: its option block is not parsed or
+	// validated, so a kept-as-template disabled scope (e.g. shared: {enable:
+	// false, dns-mode: hijack, interface: [...]}) cannot reject startup. The
+	// defaults below keep the compiled policy identical to an enabled scope
+	// whose block is empty.
+	if localEnabled {
+		if err = validateAndroidUIDOptions(runtime.GOOS, options.Local); err != nil {
+			return nil, err
+		}
 	}
-	sharedDNSMode, err := normalizeDNSMode(options.Shared.DNSMode)
-	if err != nil {
-		return nil, E.Cause(err, "parse shared.dns_mode")
+	localDNSMode := dnsModeHijack
+	if localEnabled {
+		localDNSMode, err = normalizeDNSMode(options.Local.DNSMode)
+		if err != nil {
+			return nil, E.Cause(err, "parse local.dns_mode")
+		}
 	}
-	includeUIDRanges, err := parseUIDRanges(options.Local.IncludeUID, options.Local.IncludeUIDRange)
-	if err != nil {
-		return nil, E.Cause(err, "parse include_uid_range")
+	sharedDNSMode := dnsModeHijack
+	if sharedEnabled {
+		sharedDNSMode, err = normalizeDNSMode(options.Shared.DNSMode)
+		if err != nil {
+			return nil, E.Cause(err, "parse shared.dns_mode")
+		}
 	}
-	excludeUIDRanges, err := parseUIDRanges(options.Local.ExcludeUID, options.Local.ExcludeUIDRange)
-	if err != nil {
-		return nil, E.Cause(err, "parse exclude_uid_range")
+	var includeUIDRanges, excludeUIDRanges []UIDRange
+	if localEnabled {
+		if includeUIDRanges, err = parseUIDRanges(options.Local.IncludeUID, options.Local.IncludeUIDRange); err != nil {
+			return nil, E.Cause(err, "parse include_uid_range")
+		}
+		if excludeUIDRanges, err = parseUIDRanges(options.Local.ExcludeUID, options.Local.ExcludeUIDRange); err != nil {
+			return nil, E.Cause(err, "parse exclude_uid_range")
+		}
 	}
 	sharedOptions := LC.EBPFShared{}
 	if sharedEnabled {
@@ -198,21 +206,27 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 			return nil, err
 		}
 	}
-	localBypassPort, err := parsePortRanges("local.bypass_port", options.Local.BypassPort, options.Local.BypassPortRange)
-	if err != nil {
-		return nil, err
+	var localBypassPort, sharedBypassPort []PortRange
+	if localEnabled {
+		if localBypassPort, err = parsePortRanges("local.bypass_port", options.Local.BypassPort, options.Local.BypassPortRange); err != nil {
+			return nil, err
+		}
 	}
-	sharedBypassPort, err := parsePortRanges("shared.bypass_port", options.Shared.BypassPort, options.Shared.BypassPortRange)
-	if err != nil {
-		return nil, err
+	if sharedEnabled {
+		if sharedBypassPort, err = parsePortRanges("shared.bypass_port", options.Shared.BypassPort, options.Shared.BypassPortRange); err != nil {
+			return nil, err
+		}
 	}
-	localBypassExclude, err := normalizeBypassExclude("local.bypass-exclude", options.Local.BypassExclude)
-	if err != nil {
-		return nil, err
+	var localBypassExclude, sharedBypassExclude []netip.Prefix
+	if localEnabled {
+		if localBypassExclude, err = normalizeBypassExclude("local.bypass-exclude", options.Local.BypassExclude); err != nil {
+			return nil, err
+		}
 	}
-	sharedBypassExclude, err := normalizeBypassExclude("shared.bypass-exclude", options.Shared.BypassExclude)
-	if err != nil {
-		return nil, err
+	if sharedEnabled {
+		if sharedBypassExclude, err = normalizeBypassExclude("shared.bypass-exclude", options.Shared.BypassExclude); err != nil {
+			return nil, err
+		}
 	}
 	sharedIncludeMAC, err := parseSharedMACAddresses(
 		"include_mac_address",
@@ -322,11 +336,15 @@ func New(ctx context.Context, options LC.EBPF, tunnel C.Tunnel, additions ...inb
 		}
 		return nil
 	}
-	if err = loadBypassRuleSets("local", &inbound.localBypassRuleSet, options.Local.BypassRuleSet); err != nil {
-		return nil, err
+	if localEnabled {
+		if err = loadBypassRuleSets("local", &inbound.localBypassRuleSet, options.Local.BypassRuleSet); err != nil {
+			return nil, err
+		}
 	}
-	if err = loadBypassRuleSets("shared", &inbound.sharedBypassRuleSet, options.Shared.BypassRuleSet); err != nil {
-		return nil, err
+	if sharedEnabled {
+		if err = loadBypassRuleSets("shared", &inbound.sharedBypassRuleSet, options.Shared.BypassRuleSet); err != nil {
+			return nil, err
+		}
 	}
 	inbound.udpTimeout, err = normalizeUDPTimeout(options.UDPTimeout)
 	if err != nil {

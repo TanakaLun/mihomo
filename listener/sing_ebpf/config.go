@@ -108,31 +108,6 @@ func enabledByDefault(value *bool) bool {
 	return value == nil || *value
 }
 
-func validateLocalOptions(enabled bool, options LC.EBPFLocal) error {
-	if enabled {
-		return nil
-	}
-	if options.DNSMode != "" {
-		return E.New("local.dns_mode requires local or hybrid mode")
-	}
-	if options.IPv6 != nil {
-		return E.New("local.ipv6 requires local or hybrid mode")
-	}
-	if options.BypassPrivateAddress != nil {
-		return E.New("local.bypass_private_address requires local or hybrid mode")
-	}
-	if len(options.BypassExclude) > 0 {
-		return E.New("local.bypass-exclude requires local or hybrid mode")
-	}
-	if len(options.IncludeUID) > 0 || len(options.IncludeUIDRange) > 0 ||
-		len(options.ExcludeUID) > 0 || len(options.ExcludeUIDRange) > 0 ||
-		len(options.IncludeAndroidUser) > 0 || len(options.IncludePackage) > 0 ||
-		len(options.ExcludePackage) > 0 {
-		return E.New("local UID policy requires local or hybrid mode")
-	}
-	return nil
-}
-
 func validateAndroidUIDOptions(goos string, options LC.EBPFLocal) error {
 	if !hasAndroidUIDOptions(options) {
 		return nil
@@ -371,32 +346,6 @@ func normalizeSharedOptions(options LC.EBPFShared) (LC.EBPFShared, error) {
 	return options, nil
 }
 
-func validateSharedOptions(enabled bool, options LC.EBPFShared) error {
-	if enabled {
-		return nil
-	}
-	if options.DNSMode != "" {
-		return E.New("shared.dns_mode requires shared or hybrid mode")
-	}
-	if options.IPv6 != nil {
-		return E.New("shared.ipv6 requires shared or hybrid mode")
-	}
-	if options.BypassPrivateAddress != nil {
-		return E.New("shared.bypass_private_address requires shared or hybrid mode")
-	}
-	if len(options.BypassExclude) > 0 {
-		return E.New("shared.bypass-exclude requires shared or hybrid mode")
-	}
-	if len(options.Interface) > 0 {
-		return E.New("shared.interface requires shared or hybrid mode")
-	}
-	if len(options.IncludeSourceCIDR) > 0 || len(options.ExcludeSourceCIDR) > 0 ||
-		len(options.IncludeMACAddress) > 0 || len(options.ExcludeMACAddress) > 0 {
-		return E.New("shared source policy requires shared or hybrid mode")
-	}
-	return nil
-}
-
 const (
 	localDataPlaneTC     = "tc"
 	localDataPlaneCgroup = "cgroup"
@@ -415,13 +364,25 @@ func normalizeDataPlanes(options LC.EBPF) (normalizedDataPlanes, error) {
 	if err != nil {
 		return normalizedDataPlanes{}, err
 	}
-	localDataPlane, cgroupPath, err := normalizeLocalDataPlane(options.Local)
-	if err != nil {
-		return normalizedDataPlanes{}, err
+	// A disabled data plane is fully inert: its option block (data-plane,
+	// cgroup-path, and everything else) is ignored rather than validated, so
+	// a kept-as-template disabled scope cannot fail startup. Enabled scopes
+	// still get their data-plane selection validated.
+	localDataPlane, cgroupPath := "", ""
+	if localEnabled {
+		localDataPlane, cgroupPath, err = normalizeLocalDataPlane(options.Local)
+		if err != nil {
+			return normalizedDataPlanes{}, err
+		}
+	} else {
+		localDataPlane = localDataPlaneCgroup
 	}
-	sharedDataPlane, err := normalizeSharedDataPlane(options.Shared)
-	if err != nil {
-		return normalizedDataPlanes{}, err
+	sharedDataPlane := sharedDataPlanePacketRewrite
+	if sharedEnabled {
+		sharedDataPlane, err = normalizeSharedDataPlane(options.Shared)
+		if err != nil {
+			return normalizedDataPlanes{}, err
+		}
 	}
 	return normalizedDataPlanes{localEnabled: localEnabled, localDataPlane: localDataPlane, cgroupPath: cgroupPath, sharedEnabled: sharedEnabled, sharedDataPlane: sharedDataPlane}, nil
 }
