@@ -17,7 +17,10 @@ func (i *Inbound) monitoredDefaultInterfaceName() string {
 	return state.defaultInterfaceName
 }
 
-func activeSharedInterfaces(configured []string, defaultInterface string) []string {
+func activeSharedInterfaces(configured []string, defaultInterface string, includeDefaultInterface bool) []string {
+	if includeDefaultInterface {
+		return slices.Clone(configured)
+	}
 	return slices.DeleteFunc(slices.Clone(configured), func(interfaceName string) bool {
 		return interfaceName == defaultInterface
 	})

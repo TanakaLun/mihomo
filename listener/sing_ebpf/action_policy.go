@@ -86,7 +86,7 @@ func (i *Inbound) compileActionPolicy() (commonEBPF.CompiledPolicy, error) {
 			Default: commonEBPF.DecisionIntercept,
 		},
 		Shared: commonEBPF.ActionScope{
-			Default: commonEBPF.DecisionIntercept,
+			Default: sharedSourceDefault(len(i.sharedOptions.IncludeSourceCIDR), len(i.sharedIncludeMAC)),
 		},
 	}
 	if i.localPolicy.IncludeUIDConfigured {
@@ -173,6 +173,17 @@ func (i *Inbound) compileActionPolicy() (commonEBPF.CompiledPolicy, error) {
 		return commonEBPF.CompiledPolicy{}, err
 	}
 	return commonEBPF.CompileActionPolicy(policy)
+}
+
+// sharedSourceDefault picks the shared-scope default when no source decision
+// matches: with an include-source-cidr / include-mac-address policy the
+// default is pass (only the listed sources are intercepted); otherwise
+// everything on the shared plane is intercepted.
+func sharedSourceDefault(includeCIDRs, includeMACs int) commonEBPF.Decision {
+	if includeCIDRs > 0 || includeMACs > 0 {
+		return commonEBPF.DecisionPass
+	}
+	return commonEBPF.DecisionIntercept
 }
 
 func appendPortDecisions(scope *commonEBPF.ActionScope, bypass []PortRange, dnsMode string, enableTCP, enableUDP bool) {

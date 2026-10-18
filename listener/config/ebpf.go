@@ -39,6 +39,7 @@ type EBPFShared struct {
 	DataPlane            string         `json:"data-plane" yaml:"data-plane" inbound:"data-plane,omitempty"`
 	DNSMode              string         `json:"dns-mode" yaml:"dns-mode" inbound:"dns-mode,omitempty"`
 	Interface            []string       `json:"interface" yaml:"interface" inbound:"interface,omitempty"`
+	DefaultInterface     bool           `json:"default-interface" yaml:"default-interface" inbound:"default-interface,omitempty"`
 	IPv6                 *bool          `json:"ipv6" yaml:"ipv6" inbound:"ipv6,omitempty"`
 	BypassPrivateAddress *bool          `json:"bypass-private-address" yaml:"bypass-private-address" inbound:"bypass-private-address,omitempty"`
 	BypassRuleSet        []string       `json:"bypass-rule-set" yaml:"bypass-rule-set" inbound:"bypass-rule-set,omitempty"`

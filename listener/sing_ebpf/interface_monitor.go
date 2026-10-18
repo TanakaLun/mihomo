@@ -554,7 +554,7 @@ func (i *Inbound) updateTCInterfaces(ctx context.Context) (outcome tcUpdateOutco
 	if localTCEnabled && localInterface == "" {
 		i.interfaceWarnings.defaultInterface.warn(i.logWarn, "default interface unavailable; retaining previous local TC attachment")
 	}
-	sharedInterfaces := activeSharedInterfaces(i.sharedOptions.Interface, defaultInterface)
+	sharedInterfaces := activeSharedInterfaces(i.sharedOptions.Interface, defaultInterface, i.sharedOptions.DefaultInterface)
 	tcSharedInterfaces := sharedInterfaces
 	if i.sharedRewriteEnabled() {
 		tcSharedInterfaces = nil

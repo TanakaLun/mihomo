@@ -167,6 +167,12 @@ Field behavior:
 - `shared.data-plane`: `packet_rewrite` (default) or `socket_assign`.
 - `shared.interface`: the downstream interfaces to take over (hotspot). Must
   not be empty when shared is enabled, and must not contain `lo`.
+- `shared.default-interface`: allow the default interface to be shared too.
+  By default the default interface is excluded from `shared.interface` (local
+  interception already owns it); set true to keep it.
+- `include-source-cidr` / `include-mac-address`: when an include source policy
+  is configured, only the listed sources are intercepted on the shared plane
+  (unlisted traffic passes in kernel); otherwise everything is intercepted.
 - `include-uid`, `include-uid-range`, `exclude-uid`, `exclude-uid-range`:
   UID-based interception policy. Ranges use `start:end` syntax.
 - Android only: `include-android-user`, `include-package`, `exclude-package`.
