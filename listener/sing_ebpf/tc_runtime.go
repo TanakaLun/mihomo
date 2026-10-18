@@ -12,6 +12,9 @@ import (
 // package's concrete resource types.
 type tcRuntime = kernelRuntime.TCRuntime
 type tcRuntimeConfig = kernelRuntime.TCRuntimeConfig
+type tcNamespace = kernelRuntime.TCNamespace
+
+var newTCNamespace = kernelRuntime.NewTCNamespace
 
 // newTCRuntime starts and returns one complete TC resource owner backed by the
 // prepared sing-ebpf TC backend.

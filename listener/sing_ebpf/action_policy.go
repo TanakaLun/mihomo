@@ -82,8 +82,6 @@ func (i *Inbound) compileActionPolicy() (commonEBPF.CompiledPolicy, error) {
 		return commonEBPF.CompiledPolicy{}, err
 	}
 	policy := commonEBPF.ActionPolicy{
-		EnableTCP: i.enableTCP,
-		EnableUDP: i.enableUDP,
 		Local: commonEBPF.ActionScope{
 			Default: commonEBPF.DecisionIntercept,
 		},

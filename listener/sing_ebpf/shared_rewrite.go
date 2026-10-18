@@ -109,8 +109,7 @@ func (s *sharedRewrite) prepareBackend() (*ECommon.SharedPacketRewriteBackend, e
 	if s.inbound.sharedRewriteIPv6Enabled() {
 		redirectIPv6 = s.inbound.redirectIPv6Prefix
 	}
-	cgroupBackend := s.inbound.cgroupBackendInstance()
-	backend, err := ECommon.PrepareSharedPacketRewrite(cgroupBackend, ECommon.SharedPacketRewriteConfig{
+	backend, err := ECommon.PrepareSharedPacketRewrite(ECommon.SharedPacketRewriteConfig{
 		ListenerPort: s.listeners.selectedPort(),
 		EnableTCP:    s.inbound.enableTCP,
 		EnableUDP:    s.inbound.enableUDP,
@@ -165,7 +164,7 @@ func (s *sharedRewrite) startListeners() error {
 }
 
 func (s *sharedRewrite) newListener(network string, ipv6Listener bool, port uint16) (*internalListener, error) {
-	return newInternalListener(s.inbound.socketControl(ipv6Listener), network, ipv6Listener, port, s)
+	return newInternalListener(s.inbound.socketControl(ipv6Listener), network, ipv6Listener, port, s, "")
 }
 
 func (s *sharedRewrite) Close() error {

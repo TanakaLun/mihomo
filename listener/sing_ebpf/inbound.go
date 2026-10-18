@@ -78,6 +78,9 @@ type Inbound struct {
 
 	cgroupBackend           *ECommon.CgroupBackend
 	cgroupBackendAccess     sync.RWMutex
+	tcListeners             internalListenerSet
+	tcNamespace             *tcNamespace
+	tcNamespaceAccess       sync.Mutex
 	tcDataPlane             tcRuntime
 	tcDataPlaneAccess       sync.RWMutex
 	interfaceMonitor        tcInterfaceMonitor
@@ -453,12 +456,15 @@ func (i *Inbound) start() error {
 	if sharedSocketAssignEnabled {
 		tcSharedInterfaces = sharedInterfaces
 	}
-	if i.localEnabled || sharedSocketAssignEnabled {
+	if localTCEnabled || sharedSocketAssignEnabled {
 		if err := i.startTCListeners(); err != nil {
 			return err
 		}
 	}
 	if i.localCgroupEnabled() {
+		if err := i.listeners.start(i.enableTCP, i.enableUDP, true, i.localIPv6, i.newListener); err != nil {
+			return err
+		}
 		if err := i.prepareCgroupBackend(); err != nil {
 			return err
 		}
@@ -479,7 +485,7 @@ func (i *Inbound) start() error {
 	var dataPlane tcRuntime
 	if localTCEnabled || sharedSocketAssignEnabled {
 		backendConfig := ECommon.TCConfig{
-			ListenerPort:     i.listeners.selectedPort(),
+			ListenerPort:     i.tcListeners.selectedPort(),
 			EnableLocal:      localTCEnabled,
 			EnableShared:     sharedSocketAssignEnabled,
 			EnableIPv4:       true,
@@ -507,12 +513,12 @@ func (i *Inbound) start() error {
 		if err != nil {
 			return err
 		}
-		if err = i.listeners.registerTCTCPListeners(backend); err != nil {
+		if err = i.tcListeners.registerTCTCPListeners(backend); err != nil {
 			return E.Errors(err, backend.Close())
 		}
 		tcIPv6Enabled := localTCEnabled && i.localIPv6 || sharedSocketAssignEnabled && i.sharedIPv6
 		dataPlane, err = newTCRuntime(backend, tcRuntimeConfig{
-			LocalEnabled:          localTCEnabled,
+			Namespace:             i.tcNamespace,
 			IPv6Enabled:           tcIPv6Enabled,
 			LocalInterface:        localInterface,
 			SharedInterfaces:      tcSharedInterfaces,
@@ -612,7 +618,7 @@ func (i *Inbound) logInboundReady(network, defaultInterface, localInterface stri
 		defaultInterface,
 		localInterface,
 		joinStringList(sharedInterfaces),
-		i.listeners.String(),
+		i.tcListeners.String(),
 		i.tcPriority,
 	)
 }
@@ -816,6 +822,12 @@ func (i *Inbound) Close() error {
 		if cgroupBackend != nil {
 			cgroupErr = cgroupBackend.Close()
 		}
+		tcListenersErr := i.tcListeners.close()
+		tcNamespaceErr := error(nil)
+		if i.tcNamespace != nil {
+			tcNamespaceErr = i.tcNamespace.Close()
+			i.tcNamespace = nil
+		}
 		listenerErr := i.listeners.close()
 		i.udpReplySockets.stopSweeper()
 		udpReplySocketErr := i.udpReplySockets.close()
@@ -830,7 +842,7 @@ func (i *Inbound) Close() error {
 			selfBypassErr = i.selfBypass.Close()
 			i.selfBypass = nil
 		}
-		closeErr = E.Errors(monitorErr, sharedRewriteErr, disableErr, listenerErr, udpReplySocketErr, dataPlaneErr, cgroupErr, routeErr, processTrackerErr, selfBypassErr)
+		closeErr = E.Errors(monitorErr, sharedRewriteErr, disableErr, listenerErr, tcListenersErr, tcNamespaceErr, udpReplySocketErr, dataPlaneErr, cgroupErr, routeErr, processTrackerErr, selfBypassErr)
 	})
 	return closeErr
 }
@@ -840,7 +852,7 @@ func (i *Inbound) Address() string {
 		return "eBPF(cgroup=" + i.cgroupBackendInstance().CgroupPath() + ", listen_port=" + fmt.Sprint(i.listeners.selectedPort()) + ")"
 	}
 	if i.tcDataPlane != nil {
-		return "eBPF(TC, listen_port=" + fmt.Sprint(i.listeners.selectedPort()) + ")"
+		return "eBPF(TC, listen_port=" + fmt.Sprint(i.tcListeners.selectedPort()) + ")"
 	}
 	return "eBPF"
 }

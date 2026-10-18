@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -15,10 +16,37 @@ import (
 	commonEBPF "github.com/CHIZI-0618/sing-ebpf"
 	"github.com/metacubex/mihomo/component/dialer"
 
+	"github.com/vishvananda/netns"
+
 	E "github.com/metacubex/sing/common/exceptions"
 
 	"golang.org/x/sys/unix"
 )
+
+// bindInNamespace runs the socket factory inside the network namespace at
+// namespacePath (a /proc/<pid>/fd/<n> path from a TCNamespace). The socket is
+// therefore created there, which is what the TC socket-assignment delivery
+// expects the transparent internal listeners to live in. vishvananda/netns v0
+// in this tree has no Do/Done helpers, so the LockOSThread + Get/Set/restore
+// dance is spelled out.
+func bindInNamespace(namespacePath string, bind func() error) error {
+	ns, err := netns.GetFromPath(namespacePath)
+	if err != nil {
+		return E.Cause(err, "open TC network namespace")
+	}
+	defer ns.Close()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	original, err := netns.Get()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = netns.Set(original) }()
+	if err = netns.Set(ns); err != nil {
+		return E.Cause(err, "enter TC network namespace")
+	}
+	return bind()
+}
 
 // internalListenerHandler dispatches redirected connections/packets. Both the
 // local cgroup inbound and the shared-network inbound implement it so the
@@ -237,17 +265,32 @@ func (s *internalListenerSet) writeUDP(
 }
 
 func (i *Inbound) startTCListeners() error {
-	return i.listeners.start(
+	i.tcNamespaceAccess.Lock()
+	defer i.tcNamespaceAccess.Unlock()
+	if i.tcNamespace == nil {
+		var err error
+		i.tcNamespace, err = newTCNamespace()
+		if err != nil {
+			return err
+		}
+	}
+	return i.tcListeners.start(
 		i.enableTCP,
 		i.enableUDP,
 		true,
 		i.localIPv6 || i.sharedIPv6,
-		i.newListener,
+		func(network string, ipv6 bool, port uint16) (*internalListener, error) {
+			return i.newInternalListenerInNamespace(i.tcNamespace, network, ipv6, port)
+		},
 	)
 }
 
 func (i *Inbound) newListener(network string, ipv6 bool, port uint16) (*internalListener, error) {
-	return newInternalListener(i.socketControl(ipv6), network, ipv6, port, i)
+	return newInternalListener(i.socketControl(ipv6), network, ipv6, port, i, "")
+}
+
+func (i *Inbound) newInternalListenerInNamespace(namespace *tcNamespace, network string, ipv6 bool, port uint16) (*internalListener, error) {
+	return newInternalListener(i.socketControl(ipv6), network, ipv6, port, i, namespace.Path())
 }
 
 func newInternalListener(
@@ -256,6 +299,7 @@ func newInternalListener(
 	ipv6 bool,
 	port uint16,
 	handler internalListenerHandler,
+	namespacePath string,
 ) (*internalListener, error) {
 	listenAddress := "0.0.0.0"
 	listenNetwork := network + "4"
@@ -278,11 +322,20 @@ func newInternalListener(
 		closed:  make(chan struct{}),
 		handler: handler,
 	}
+	doListen := func() error {
+		var err error
+		if network == "tcp" {
+			current.listener, err = lc.Listen(context.Background(), listenNetwork, address)
+		} else {
+			current.packet, err = lc.ListenPacket(context.Background(), listenNetwork, address)
+		}
+		return err
+	}
 	var err error
-	if network == "tcp" {
-		current.listener, err = lc.Listen(context.Background(), listenNetwork, address)
+	if namespacePath != "" {
+		err = bindInNamespace(namespacePath, doListen)
 	} else {
-		current.packet, err = lc.ListenPacket(context.Background(), listenNetwork, address)
+		err = doListen()
 	}
 	if err != nil {
 		return nil, err
