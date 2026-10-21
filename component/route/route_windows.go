@@ -132,8 +132,12 @@ func ipForwardTable(family uint16) ([]mibIPForwardRow2, error) {
 	// the deferred free runs (the crashes seen after the empty-set bootstrap
 	// landed were exactly this).
 	defer procFreeMibTable.Call(uintptr(unsafe.Pointer(table)))
-	raw := unsafe.Slice(&table.table[0], int(table.numEntries))
-	rows := make([]mibIPForwardRow2, len(raw))
+	n := int(table.numEntries)
+	if n < 0 || n > 1<<20 {
+		return nil, fmt.Errorf("route: GetIpForwardTable2 family=%d returned implausible row count %d", family, n)
+	}
+	raw := unsafe.Slice(&table.table[0], n)
+	rows := make([]mibIPForwardRow2, n)
 	copy(rows, raw)
 	return rows, nil
 }
@@ -277,6 +281,13 @@ func (r *router) ensureTunLUID() error {
 func (r *router) Apply(prefixes []netip.Prefix) (int, int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Nothing to install and nothing installed: skip the routing-table reads
+	// entirely. The listener calls Apply at startup with an empty set (rule
+	// providers load asynchronously), and reading the FIB during interface
+	// churn is exactly where the earlier faults happened.
+	if len(prefixes) == 0 && len(r.applied) == 0 {
+		return 0, 0, nil
+	}
 	if err := r.ensureTunLUID(); err != nil {
 		return 0, 0, err
 	}
