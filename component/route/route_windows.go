@@ -126,8 +126,16 @@ func ipForwardTable(family uint16) ([]mibIPForwardRow2, error) {
 	if status != 0 {
 		return nil, fmt.Errorf("route: GetIpForwardTable2 family=%d failed: %w", family, statusErr(status))
 	}
+	// GetIpForwardTable2 returns a heap buffer that must be released with
+	// FreeMibTable. Copy the rows into Go-owned memory before freeing it;
+	// returning a slice over the C buffer would be a use-after-free once
+	// the deferred free runs (the crashes seen after the empty-set bootstrap
+	// landed were exactly this).
 	defer procFreeMibTable.Call(uintptr(unsafe.Pointer(table)))
-	return unsafe.Slice(&table.table[0], int(table.numEntries)), nil
+	raw := unsafe.Slice(&table.table[0], int(table.numEntries))
+	rows := make([]mibIPForwardRow2, len(raw))
+	copy(rows, raw)
+	return rows, nil
 }
 
 // statusErr converts a NETIOAPI_STATUS return value into an error. These
