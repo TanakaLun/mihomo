@@ -153,6 +153,8 @@ tun:
     - ruleset-4
   bypass-rule-set: # 将指定规则集中的目标 IP CIDR 规则作为内核级旁路集合发布：DNS fake-ip 会对这些地址回真实 IP（配合 redir-host 则天然生效），Windows 上还会在物理接口添加更具体的旁路路由，使匹配流量不再进入 TUN。要求规则集为 ipcidr / classical 行为。
     - geoip-cn
+  bypass-address: # 静态 CIDR 集合旁路（字面量，无需规则集），与上面的规则集叠加生效，所有平台有效。
+    - 100.64.0.0/10
   route-exclude-address: # 启用 auto-route 时从路由中排除的 CIDR（走物理网卡直连）。所有平台生效（Windows 同样支持）。
     - 100.64.0.0/10
   route-address: # 启用 auto-route 时使用自定义路由而不是默认路由

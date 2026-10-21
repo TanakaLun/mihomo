@@ -71,6 +71,7 @@ type Listener struct {
 	bypassMutex     sync.Mutex
 	bypassPrefixes  []netip.Prefix
 	bypassRouter    route.Router
+	bypassBootstrap bool
 
 	dnsServerIp []string
 }
@@ -481,8 +482,8 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 
 	}
 
-	if len(options.BypassRuleSet) > 0 {
-		if err = l.startBypassRuleSet(options.BypassRuleSet); err != nil {
+	if len(l.bypassSourceTags()) > 0 {
+		if err = l.startBypassRuleSet(); err != nil {
 			return
 		}
 		if l.ruleUpdateCallbackCloser == nil {
@@ -581,6 +582,9 @@ func (l *Listener) ruleUpdateCallback(ruleProvider P.RuleProvider) {
 	}
 	if slices.Contains(l.options.RouteExcludeAddressSet, name) {
 		l.updateRule(ruleProvider, true, true)
+		// The route-exclude-address-set family also feeds the bypass pipeline
+		// (DNS linkage + Windows physical routes), so republish on update.
+		l.updateBypassRuleSet()
 		return
 	}
 	if slices.Contains(l.options.BypassRuleSet, name) {
@@ -623,25 +627,92 @@ func (l *Listener) updateRule(ruleProvider P.RuleProvider, exclude bool, update 
 	}
 }
 
-// startBypassRuleSet validates the configured bypass-rule-set tags and
-// registers a DNS bypass publisher for the union of their CIDRs. Physical
-// bypass routes (Windows) are installed by reapplyBypassRoutes once the TUN
-// interface is up.
-func (l *Listener) startBypassRuleSet(tags []string) error {
+// startBypassRuleSet validates the configured bypass rule sources (static
+// bypass-address CIDRs plus the rule-set tags from bypass-rule-set and
+// route-exclude-address-set) and registers a DNS bypass publisher for the
+// union. Physical bypass routes (Windows) are installed by reapplyBypassRoutes
+// once the TUN interface is up. If no rule set has loaded yet, a background
+// bootstrap keeps re-publishing until the CIDRs appear (rule providers start
+// asynchronously and their initial-load update callback is not guaranteed to
+// fire).
+func (l *Listener) startBypassRuleSet() error {
 	l.bypassMutex.Lock()
 	defer l.bypassMutex.Unlock()
 	rt := l.rtunnel
-	for _, tag := range tags {
+	for _, tag := range l.bypassSourceTags() {
 		if _, loaded := rt.RuleProviders()[tag]; !loaded {
-			return E.New("parse bypass-rule-set: rule-set not found: ", tag)
+			return E.New("parse bypass/route-exclude rule-set: rule-set not found: ", tag)
 		}
 	}
 	l.bypassPublisher = bypass.Global().Register("tun")
-	prefixes := collectRuleSetPrefixes(l.resolveBypassProviders(tags))
+	prefixes := l.computeBypassPrefixes()
 	l.bypassPrefixes = prefixes
 	l.bypassPublisher.Publish(prefixes)
 	log.Infoln("[TUN] bypass-rule-set: %d CIDRs published (%s)", len(prefixes), bypassPrefixSamples(prefixes))
+	if len(prefixes) == 0 {
+		l.bootstrapBypass()
+	}
 	return nil
+}
+
+// bypassSourceTags returns the rule-provider tags whose CIDRs contribute to
+// the bypass set: the explicit bypass-rule-set and the route-exclude-address-set
+// family (which previously only fed the Linux nftables path and is now also
+// honoured by the Windows physical-route bypass).
+func (l *Listener) bypassSourceTags() []string {
+	tags := make([]string, 0, len(l.options.BypassRuleSet)+len(l.options.RouteExcludeAddressSet))
+	tags = append(tags, l.options.BypassRuleSet...)
+	for _, tag := range l.options.RouteExcludeAddressSet {
+		if !slices.Contains(l.options.BypassRuleSet, tag) {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+// computeBypassPrefixes returns the union of the static bypass-address CIDRs
+// and the rule-set CIDRs.
+func (l *Listener) computeBypassPrefixes() []netip.Prefix {
+	prefixes := collectRuleSetPrefixes(l.resolveBypassProviders(l.bypassSourceTags()))
+	prefixes = append(prefixes, l.options.BypassAddress...)
+	return prefixes
+}
+
+// bootstrapBypass re-publishes the bypass set in the background until the
+// rule providers have loaded. It runs once per listener.
+func (l *Listener) bootstrapBypass() {
+	if l.bypassBootstrap {
+		return
+	}
+	l.bypassBootstrap = true
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		attempts := 0
+		for range ticker.C {
+			attempts++
+			l.bypassMutex.Lock()
+			if l.closed {
+				l.bypassMutex.Unlock()
+				return
+			}
+			prefixes := l.computeBypassPrefixes()
+			loaded := len(prefixes) > 0
+			if loaded || attempts >= 60 {
+				l.bypassPrefixes = prefixes
+				if l.bypassPublisher != nil {
+					l.bypassPublisher.Publish(prefixes)
+				}
+				l.applyBypassRoutesLocked(prefixes)
+				l.bypassMutex.Unlock()
+				if loaded {
+					log.Infoln("[TUN] bypass-rule-set: rule sets loaded, %d CIDRs published (%s)", len(prefixes), bypassPrefixSamples(prefixes))
+				}
+				return
+			}
+			l.bypassMutex.Unlock()
+		}
+	}()
 }
 
 // updateBypassRuleSet republishes the bypass CIDR union and reconciles the
@@ -652,7 +723,7 @@ func (l *Listener) updateBypassRuleSet() {
 	if l.bypassPublisher == nil {
 		return
 	}
-	prefixes := collectRuleSetPrefixes(l.resolveBypassProviders(l.options.BypassRuleSet))
+	prefixes := l.computeBypassPrefixes()
 	l.bypassPrefixes = prefixes
 	l.bypassPublisher.Publish(prefixes)
 	l.applyBypassRoutesLocked(prefixes)
