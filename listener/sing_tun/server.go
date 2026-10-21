@@ -640,7 +640,7 @@ func (l *Listener) startBypassRuleSet(tags []string) error {
 	prefixes := collectRuleSetPrefixes(l.resolveBypassProviders(tags))
 	l.bypassPrefixes = prefixes
 	l.bypassPublisher.Publish(prefixes)
-	log.Infoln("[TUN] bypass-rule-set: %d CIDRs published", len(prefixes))
+	log.Infoln("[TUN] bypass-rule-set: %d CIDRs published (%s)", len(prefixes), bypassPrefixSamples(prefixes))
 	return nil
 }
 
@@ -656,7 +656,20 @@ func (l *Listener) updateBypassRuleSet() {
 	l.bypassPrefixes = prefixes
 	l.bypassPublisher.Publish(prefixes)
 	l.applyBypassRoutesLocked(prefixes)
-	log.Debugln("[TUN] bypass-rule-set: republished %d CIDRs", len(prefixes))
+	log.Debugln("[TUN] bypass-rule-set: republished %d CIDRs (%s)", len(prefixes), bypassPrefixSamples(prefixes))
+}
+
+// bypassPrefixSamples renders up to three sample prefixes for diagnostics.
+func bypassPrefixSamples(prefixes []netip.Prefix) string {
+	n := len(prefixes)
+	if n > 3 {
+		n = 3
+	}
+	samples := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		samples = append(samples, prefixes[i].String())
+	}
+	return strings.Join(samples, ", ")
 }
 
 // reapplyBypassRoutes re-applies the current bypass routes (Windows) after a

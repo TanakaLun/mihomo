@@ -17,8 +17,19 @@ func (l *Listener) applyBypassRoutesLocked(prefixes []netip.Prefix) {
 		log.Warnln("[TUN] bypass-rule-set: windows route router unavailable: %s", err.Error())
 		return
 	}
-	if err := l.bypassRouter.Apply(prefixes); err != nil {
+	installed, skipped, err := l.bypassRouter.Apply(prefixes)
+	if err != nil {
 		log.Warnln("[TUN] bypass-rule-set: apply bypass routes: %s", err.Error())
+		return
+	}
+	if installed == 0 && skipped == 0 {
+		log.Debugln("[TUN] bypass-rule-set: no route change")
+		return
+	}
+	if skipped > 0 {
+		log.Infoln("[TUN] bypass-rule-set: installed %d physical bypass routes, skipped %d (protected by TUN addressing or no physical covering route)", installed, skipped)
+	} else {
+		log.Debugln("[TUN] bypass-rule-set: installed %d physical bypass routes", installed)
 	}
 }
 

@@ -163,12 +163,12 @@ func withFakeIP(skipper *fakeip.Skipper, fakePool *fakeip.Pool, fakePool6 *fakei
 			// When any transparent inbound (eBPF, TUN) has an active bypass
 			// CIDR policy, resolve the real address first and keep it real if
 			// it falls inside the bypass set, so the kernel-level bypass can
-			// engage (matching sing-box). Hosts that are already faked skip
-			// the real resolution: their first query already decided they are
-			// not in the bypass set.
+			// engage (matching sing-box). Note: this must run even when the
+			// host already has a fake mapping — the mapping may have been
+			// created before the bypass set existed, so a fake answer would
+			// keep the domain inside the TUN forever.
 			if q.Qtype == D.TypeA || q.Qtype == D.TypeAAAA {
-				bypassSet := bypass.Global().Snapshot()
-				if bypassSet != nil && !fakeHostMapped(host, fakePool, fakePool6) {
+				if bypassSet := bypass.Global().Snapshot(); bypassSet != nil {
 					if realMsg, err := next(ctx, r); err == nil && realMsg != nil {
 						if realMsgContainsBypass(realMsg, bypassSet) {
 							return realMsg, nil
@@ -215,16 +215,6 @@ func withFakeIP(skipper *fakeip.Skipper, fakePool *fakeip.Pool, fakePool6 *fakei
 			return msg, nil
 		}
 	}
-}
-
-// fakeHostMapped reports whether the host already has a fake-ip mapping in
-// either address family's pool. When it has, the middleware can skip the real
-// resolution and answer the existing fake address directly.
-func fakeHostMapped(host string, fakePool *fakeip.Pool, fakePool6 *fakeip.Pool) bool {
-	if fakePool != nil && fakePool.ExistHost(host) {
-		return true
-	}
-	return fakePool6 != nil && fakePool6.ExistHost(host)
 }
 
 // realMsgContainsBypass reports whether a resolved DNS answer contains an

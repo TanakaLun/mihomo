@@ -16,10 +16,11 @@ import "net/netip"
 // Row is the view of a routing-table entry needed to pick a physical next hop
 // for a bypass prefix.
 type Row struct {
-	InterfaceLUID uint64
-	Prefix        netip.Prefix
-	NextHop       netip.Addr
-	Metric        uint32
+	InterfaceLUID  uint64
+	InterfaceIndex uint32
+	Prefix         netip.Prefix
+	NextHop        netip.Addr
+	Metric         uint32
 }
 
 // prefixCovers reports whether cover contains every address of prefix.
@@ -76,11 +77,13 @@ func SelectBestPhysical(rows []Row, tunLUID uint64, p netip.Prefix) (Row, bool) 
 // a specific next hop. A prefix whose best physical route changes produces a
 // different Key, so the reconciler replaces it atomically-like (add then
 // delete). Metric mirrors the selected physical row so multi-homed hosts keep
-// the pre-TUN best-path selection among equal prefixes.
+// the pre-TUN best-path selection among equal prefixes. ScopeID is the
+// interface index carried into IPv6 link-local next hops.
 type Key struct {
 	Prefix        netip.Prefix
 	NextHop       netip.Addr
 	InterfaceLUID uint64
+	ScopeID       uint32
 	Metric        uint32
 }
 
@@ -156,9 +159,10 @@ func prefixesOverlap(a, b netip.Prefix) bool {
 // Router installs and removes bypass routes on the physical data path so that
 // matching destination CIDRs never enter the TUN device.
 type Router interface {
-	// Apply reconciles the installed routes with the given bypass prefixes.
-	// Prefixes without a usable physical covering route are skipped.
-	Apply(prefixes []netip.Prefix) error
+	// Apply reconciles the installed routes with the given bypass prefixes and
+	// reports how many were installed and how many were skipped (protected or
+	// no usable physical covering route).
+	Apply(prefixes []netip.Prefix) (installed, skipped int, err error)
 	// Reset removes every route this Router installed.
 	Reset() error
 }

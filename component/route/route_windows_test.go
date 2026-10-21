@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"testing"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // The MIB_IPFORWARD_ROW2 layout is pinned so a future refactor cannot
@@ -52,6 +54,24 @@ func TestSockaddrInetRoundTrip(t *testing.T) {
 		if got != want {
 			t.Fatalf("round trip %s -> %s", want, got)
 		}
+	}
+}
+
+func TestSockaddrInetSetScope(t *testing.T) {
+	var s sockaddrInet
+	s.setAddr(mustParseAddr(t, "fe80::1"))
+	s.setScope(7)
+	s6 := (*windows.RawSockaddrInet6)(unsafe.Pointer(&s))
+	if s6.Scope_id != 7 {
+		t.Fatalf("ipv6 scope id = %d, want 7", s6.Scope_id)
+	}
+	// IPv4 must ignore the scope.
+	var s4 sockaddrInet
+	s4.setAddr(mustParseAddr(t, "10.0.0.1"))
+	s4.setScope(9)
+	r4 := (*windows.RawSockaddrInet4)(unsafe.Pointer(&s4))
+	if r4.Family != windows.AF_INET {
+		t.Fatalf("ipv4 family = %d, want AF_INET", r4.Family)
 	}
 }
 

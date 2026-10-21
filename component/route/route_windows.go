@@ -48,6 +48,15 @@ func (s *sockaddrInet) setAddr(addr netip.Addr) {
 	s6.Addr = addr.As16()
 }
 
+// setScope fills the IPv6 scope identifier (the interface index). Link-local
+// next hops require it, otherwise CreateIpForwardEntry2 rejects the route.
+func (s *sockaddrInet) setScope(scope uint32) {
+	if *(*uint16)(unsafe.Pointer(s)) == windows.AF_INET6 {
+		s6 := (*windows.RawSockaddrInet6)(unsafe.Pointer(s))
+		s6.Scope_id = scope
+	}
+}
+
 func (s *sockaddrInet) addr() netip.Addr {
 	family := *(*uint16)(unsafe.Pointer(s))
 	switch family {
@@ -133,6 +142,9 @@ func newForwardRow(key Key) *mibIPForwardRow2 {
 	row.InterfaceLUID = key.InterfaceLUID
 	row.DestinationPrefix.set(key.Prefix)
 	row.NextHop.setAddr(key.NextHop)
+	if key.NextHop.Is6() && key.NextHop.IsLinkLocalUnicast() {
+		row.NextHop.setScope(key.ScopeID)
+	}
 	row.Metric = key.Metric
 	return row
 }
@@ -200,28 +212,30 @@ func (r *router) ensureTunLUID() error {
 	return nil
 }
 
-func (r *router) Apply(prefixes []netip.Prefix) error {
+func (r *router) Apply(prefixes []netip.Prefix) (int, int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.ensureTunLUID(); err != nil {
-		return err
+		return 0, 0, err
 	}
 
 	rows4, err := ipForwardTable(windows.AF_INET)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	rows6, err := ipForwardTable(windows.AF_INET6)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	view4 := toRows(rows4)
 	view6 := toRows(rows6)
 
+	var skipped int
 	desired := make(map[Key]struct{}, len(prefixes))
 	for _, prefix := range FilterProtected(prefixes, r.protected) {
 		prefix = prefix.Masked()
 		if !prefix.IsValid() {
+			skipped++
 			continue
 		}
 		view := view4
@@ -232,9 +246,10 @@ func (r *router) Apply(prefixes []netip.Prefix) error {
 		if !ok {
 			// No physical route covers this prefix; leaving it in the TUN is
 			// the safe fallback (it gets proxied as usual).
+			skipped++
 			continue
 		}
-		desired[Key{Prefix: prefix, NextHop: row.NextHop, InterfaceLUID: row.InterfaceLUID, Metric: row.Metric}] = struct{}{}
+		desired[Key{Prefix: prefix, NextHop: row.NextHop, InterfaceLUID: row.InterfaceLUID, ScopeID: row.InterfaceIndex, Metric: row.Metric}] = struct{}{}
 	}
 	desiredKeys := make([]Key, 0, len(desired))
 	for key := range desired {
@@ -247,10 +262,12 @@ func (r *router) Apply(prefixes []netip.Prefix) error {
 	adds, removes := Plan(currentKeys, desiredKeys)
 
 	// Add first, then delete, so a changed next hop never black-holes.
+	installed := 0
 	for _, key := range adds {
 		if err := createForwardEntry(newForwardRow(key)); err != nil {
-			return err
+			return installed, skipped, err
 		}
+		installed++
 	}
 	var removalErr error
 	for _, key := range removes {
@@ -261,10 +278,10 @@ func (r *router) Apply(prefixes []netip.Prefix) error {
 	if removalErr != nil {
 		// The applied map is only updated on success below; a failed removal
 		// is retried on the next Apply.
-		return removalErr
+		return installed, skipped, removalErr
 	}
 	r.applied = desired
-	return nil
+	return installed, skipped, nil
 }
 
 func (r *router) Reset() error {
@@ -294,10 +311,11 @@ func toRows(table []mibIPForwardRow2) []Row {
 			continue
 		}
 		rows = append(rows, Row{
-			InterfaceLUID: row.InterfaceLUID,
-			Prefix:        prefix,
-			NextHop:       nextHop,
-			Metric:        row.Metric,
+			InterfaceLUID:  row.InterfaceLUID,
+			InterfaceIndex: row.InterfaceIndex,
+			Prefix:         prefix,
+			NextHop:        nextHop,
+			Metric:         row.Metric,
 		})
 	}
 	return rows
