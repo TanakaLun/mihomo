@@ -6,8 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -140,6 +144,7 @@ func newForwardRow(key Key) *mibIPForwardRow2 {
 	row := &mibIPForwardRow2{}
 	procInitializeIpForwardEntry.Call(uintptr(unsafe.Pointer(row)))
 	row.InterfaceLUID = key.InterfaceLUID
+	row.InterfaceIndex = key.ScopeID
 	row.DestinationPrefix.set(key.Prefix)
 	row.NextHop.setAddr(key.NextHop)
 	if key.NextHop.Is6() && key.NextHop.IsLinkLocalUnicast() {
@@ -166,6 +171,55 @@ func deleteForwardEntry(row *mibIPForwardRow2) error {
 		return nil
 	}
 	return fmt.Errorf("route: DeleteIpForwardEntry2 %s via %s failed: %w", row.DestinationPrefix.prefix(), row.NextHop.addr(), statusErr(status))
+}
+
+// createForwardEntryFallback installs the route through the legacy route.exe
+// command. It is only used when CreateIpForwardEntry2 keeps failing; route.exe
+// talks to the same FIB but its error output is far more specific, which
+// helps both diagnosis and edge cases where the WinAPI path misbehaves.
+func createForwardEntryFallback(key Key) error {
+	if !key.Prefix.Addr().Is4() {
+		// route.exe IPv6 syntax differs; keep the WinAPI path there.
+		return syscall.Errno(windows.ERROR_NOT_SUPPORTED)
+	}
+	mask := ipv4MaskString(key.Prefix.Bits())
+	args := []string{
+		"add",
+		key.Prefix.Addr().String(),
+		"mask", mask,
+		key.NextHop.String(),
+		"metric", strconv.FormatUint(uint64(key.Metric), 10),
+		"if", strconv.FormatUint(uint64(key.ScopeID), 10),
+	}
+	out, err := exec.Command("route", args...).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	text := strings.TrimSpace(string(out))
+	if text == "" {
+		text = err.Error()
+	}
+	// An identical route already installed (by us or the operator) is fine.
+	if strings.Contains(text, "already exists") || strings.Contains(text, "已存在") {
+		return nil
+	}
+	return fmt.Errorf("route: route add %s via %s failed: %s", key.Prefix, key.NextHop, text)
+}
+
+// ipv4MaskString renders the dotted netmask for a /bits prefix.
+func ipv4MaskString(bits int) string {
+	var mask [4]byte
+	for i := 0; i < 4; i++ {
+		n := bits - i*8
+		if n > 8 {
+			n = 8
+		}
+		if n <= 0 {
+			break
+		}
+		mask[i] = byte(0xff << (8 - n))
+	}
+	return fmt.Sprintf("%d.%d.%d.%d", mask[0], mask[1], mask[2], mask[3])
 }
 
 // router is the Windows Router implementation. It is safe for concurrent use.
@@ -262,12 +316,34 @@ func (r *router) Apply(prefixes []netip.Prefix) (int, int, error) {
 	adds, removes := Plan(currentKeys, desiredKeys)
 
 	// Add first, then delete, so a changed next hop never black-holes.
+	// A single add must not abort the whole batch: routes are read from a FIB
+	// snapshot that can go stale during interface churn (for example right
+	// after the default interface changes), so retry once and otherwise skip
+	// the prefix, log a sample, and keep installing the rest.
 	installed := 0
+	var failed int
+	var failedSamples []string
+	const maxFailedSamples = 3
+	failedKeys := make(map[Key]struct{})
 	for _, key := range adds {
-		if err := createForwardEntry(newForwardRow(key)); err != nil {
-			return installed, skipped, err
+		err := createForwardEntry(newForwardRow(key))
+		if err != nil {
+			time.Sleep(50 * time.Millisecond) // let the interface settle
+			err = createForwardEntry(newForwardRow(key))
 		}
-		installed++
+		if err != nil {
+			err = createForwardEntryFallback(key)
+		}
+		if err == nil {
+			installed++
+			continue
+		}
+		failed++
+		failedKeys[key] = struct{}{}
+		if len(failedSamples) < maxFailedSamples {
+			failedSamples = append(failedSamples,
+				fmt.Sprintf("%s via %s (iface luid=%d index=%d metric=%d): %s", key.Prefix, key.NextHop, key.InterfaceLUID, key.ScopeID, key.Metric, err))
+		}
 	}
 	var removalErr error
 	for _, key := range removes {
@@ -275,12 +351,29 @@ func (r *router) Apply(prefixes []netip.Prefix) (int, int, error) {
 			removalErr = err
 		}
 	}
+
+	// Record only the routes that were actually installed; failed adds stay
+	// out of applied so the next Apply retries them.
+	applied := make(map[Key]struct{}, len(desired))
+	for key := range desired {
+		applied[key] = struct{}{}
+	}
+	for key := range failedKeys {
+		delete(applied, key)
+	}
+	r.applied = applied
+
+	if failed > 0 {
+		msg := fmt.Sprintf("failed to install %d bypass routes; first %d: %s", failed, len(failedSamples), strings.Join(failedSamples, "; "))
+		if installed == 0 {
+			return 0, skipped, errors.New(msg)
+		}
+		return installed, skipped, errors.New(msg)
+	}
 	if removalErr != nil {
-		// The applied map is only updated on success below; a failed removal
-		// is retried on the next Apply.
+		// A failed removal is retried on the next Apply.
 		return installed, skipped, removalErr
 	}
-	r.applied = desired
 	return installed, skipped, nil
 }
 

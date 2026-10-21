@@ -19,7 +19,11 @@ func (l *Listener) applyBypassRoutesLocked(prefixes []netip.Prefix) {
 	}
 	installed, skipped, err := l.bypassRouter.Apply(prefixes)
 	if err != nil {
-		log.Warnln("[TUN] bypass-rule-set: apply bypass routes: %s", err.Error())
+		if installed == 0 {
+			log.Warnln("[TUN] bypass-rule-set: apply bypass routes: %s", err.Error())
+		} else {
+			log.Infoln("[TUN] bypass-rule-set: installed %d physical bypass routes (partial: %s; skipped=%d)", installed, err.Error(), skipped)
+		}
 		return
 	}
 	if installed == 0 && skipped == 0 {
