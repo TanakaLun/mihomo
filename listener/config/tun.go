@@ -34,8 +34,6 @@ type Tun struct {
 	RouteAddressSet                       []string       `yaml:"route-address-set" json:"route-address-set,omitempty"`
 	RouteExcludeAddress                   []netip.Prefix `yaml:"route-exclude-address" json:"route-exclude-address,omitempty"`
 	RouteExcludeAddressSet                []string       `yaml:"route-exclude-address-set" json:"route-exclude-address-set,omitempty"`
-	BypassRuleSet                         []string       `yaml:"bypass-rule-set" json:"bypass-rule-set,omitempty"`
-	BypassAddress                         []netip.Prefix `yaml:"bypass-address" json:"bypass-address,omitempty"`
 	IncludeInterface                      []string       `yaml:"include-interface" json:"include-interface,omitempty"`
 	ExcludeInterface                      []string       `yaml:"exclude-interface" json:"exclude-interface,omitempty"`
 	IncludeUID                            []uint32       `yaml:"include-uid" json:"include-uid,omitempty"`
@@ -80,8 +78,6 @@ func (t *Tun) Sort() {
 	slices.Sort(t.RouteAddressSet)
 	slices.SortFunc(t.RouteExcludeAddress, netipx.ComparePrefix)
 	slices.Sort(t.RouteExcludeAddressSet)
-	slices.Sort(t.BypassRuleSet)
-	slices.SortFunc(t.BypassAddress, netipx.ComparePrefix)
 	slices.Sort(t.IncludeInterface)
 	slices.Sort(t.ExcludeInterface)
 	slices.Sort(t.IncludeUID)

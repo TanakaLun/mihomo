@@ -582,13 +582,12 @@ func (l *Listener) ruleUpdateCallback(ruleProvider P.RuleProvider) {
 	}
 	if slices.Contains(l.options.RouteExcludeAddressSet, name) {
 		l.updateRule(ruleProvider, true, true)
-		// The route-exclude-address-set family also feeds the bypass pipeline
-		// (DNS linkage + Windows physical routes), so republish on update.
+		// The route-exclude-address-set family is the single source of the
+		// kernel bypass: it feeds both the native route exclusion and the
+		// bypass pipeline (DNS linkage + Windows physical routes), so
+		// republish on update.
 		l.updateBypassRuleSet()
 		return
-	}
-	if slices.Contains(l.options.BypassRuleSet, name) {
-		l.updateBypassRuleSet()
 	}
 }
 
@@ -627,8 +626,8 @@ func (l *Listener) updateRule(ruleProvider P.RuleProvider, exclude bool, update 
 	}
 }
 
-// startBypassRuleSet validates the configured bypass rule sources (static
-// bypass-address CIDRs plus the rule-set tags from bypass-rule-set and
+// startBypassRuleSet validates the configured bypass sources (static
+// route-exclude-address CIDRs plus the rule-set tags from
 // route-exclude-address-set) and registers a DNS bypass publisher for the
 // union. Physical bypass routes (Windows) are installed by reapplyBypassRoutes
 // once the TUN interface is up. If no rule set has loaded yet, a background
@@ -641,7 +640,7 @@ func (l *Listener) startBypassRuleSet() error {
 	rt := l.rtunnel
 	for _, tag := range l.bypassSourceTags() {
 		if _, loaded := rt.RuleProviders()[tag]; !loaded {
-			return E.New("parse bypass/route-exclude rule-set: rule-set not found: ", tag)
+			return E.New("parse route-exclude-address-set: rule-set not found: ", tag)
 		}
 	}
 	l.bypassPublisher = bypass.Global().Register("tun")
@@ -656,25 +655,18 @@ func (l *Listener) startBypassRuleSet() error {
 }
 
 // bypassSourceTags returns the rule-provider tags whose CIDRs contribute to
-// the bypass set: the explicit bypass-rule-set and the route-exclude-address-set
-// family (which previously only fed the Linux nftables path and is now also
-// honoured by the Windows physical-route bypass).
+// the bypass set: the route-exclude-address-set family (which previously only
+// fed the Linux nftables path and is now the single source for the kernel
+// bypass honoured by DNS linkage and the Windows physical-route bypass).
 func (l *Listener) bypassSourceTags() []string {
-	tags := make([]string, 0, len(l.options.BypassRuleSet)+len(l.options.RouteExcludeAddressSet))
-	tags = append(tags, l.options.BypassRuleSet...)
-	for _, tag := range l.options.RouteExcludeAddressSet {
-		if !slices.Contains(l.options.BypassRuleSet, tag) {
-			tags = append(tags, tag)
-		}
-	}
-	return tags
+	return slices.Clone(l.options.RouteExcludeAddressSet)
 }
 
-// computeBypassPrefixes returns the union of the static bypass-address CIDRs
-// and the rule-set CIDRs.
+// computeBypassPrefixes returns the union of the static route-exclude-address
+// CIDRs and the rule-set CIDRs.
 func (l *Listener) computeBypassPrefixes() []netip.Prefix {
 	prefixes := collectRuleSetPrefixes(l.resolveBypassProviders(l.bypassSourceTags()))
-	prefixes = append(prefixes, l.options.BypassAddress...)
+	prefixes = append(prefixes, l.options.RouteExcludeAddress...)
 	return prefixes
 }
 
@@ -751,8 +743,8 @@ func (l *Listener) reapplyBypassRoutes() {
 	l.applyBypassRoutesLocked(l.bypassPrefixes)
 }
 
-// resolveBypassProviders maps the configured bypass-rule-set tags to their
-// rule providers. Missing providers are reported and skipped; startup
+// resolveBypassProviders maps the configured route-exclude-address-set tags to
+// their rule providers. Missing providers are reported and skipped; startup
 // validation happens in startBypassRuleSet.
 func (l *Listener) resolveBypassProviders(tags []string) []P.RuleProvider {
 	rt := l.rtunnel

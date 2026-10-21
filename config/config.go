@@ -295,29 +295,34 @@ type RawTun struct {
 	RouteAddressSet                       []string       `yaml:"route-address-set" json:"route-address-set,omitempty"`
 	RouteExcludeAddress                   []netip.Prefix `yaml:"route-exclude-address" json:"route-exclude-address,omitempty"`
 	RouteExcludeAddressSet                []string       `yaml:"route-exclude-address-set" json:"route-exclude-address-set,omitempty"`
-	BypassRuleSet                         []string       `yaml:"bypass-rule-set" json:"bypass-rule-set,omitempty"`
-	BypassAddress                         []netip.Prefix `yaml:"bypass-address" json:"bypass-address,omitempty"`
 	IncludeInterface                      []string       `yaml:"include-interface" json:"include-interface,omitempty"`
 	ExcludeInterface                      []string       `yaml:"exclude-interface" json:"exclude-interface,omitempty"`
-	IncludeUID                            []uint32       `yaml:"include-uid" json:"include-uid,omitempty"`
-	IncludeUIDRange                       []string       `yaml:"include-uid-range" json:"include-uid-range,omitempty"`
-	ExcludeUID                            []uint32       `yaml:"exclude-uid" json:"exclude-uid,omitempty"`
-	ExcludeUIDRange                       []string       `yaml:"exclude-uid-range" json:"exclude-uid-range,omitempty"`
-	ExcludeSrcPort                        []uint16       `yaml:"exclude-src-port" json:"exclude-src-port,omitempty"`
-	ExcludeSrcPortRange                   []string       `yaml:"exclude-src-port-range" json:"exclude-src-port-range,omitempty"`
-	ExcludeDstPort                        []uint16       `yaml:"exclude-dst-port" json:"exclude-dst-port,omitempty"`
-	ExcludeDstPortRange                   []string       `yaml:"exclude-dst-port-range" json:"exclude-dst-port-range,omitempty"`
-	IncludeAndroidUser                    []int          `yaml:"include-android-user" json:"include-android-user,omitempty"`
-	IncludePackage                        []string       `yaml:"include-package" json:"include-package,omitempty"`
-	ExcludePackage                        []string       `yaml:"exclude-package" json:"exclude-package,omitempty"`
-	IncludeMACAddress                     []string       `yaml:"include-mac-address" json:"include-mac-address,omitempty"`
-	ExcludeMACAddress                     []string       `yaml:"exclude-mac-address" json:"exclude-mac-address,omitempty"`
-	EndpointIndependentNat                bool           `yaml:"endpoint-independent-nat" json:"endpoint-independent-nat,omitempty"`
-	UDPTimeout                            int64          `yaml:"udp-timeout" json:"udp-timeout,omitempty"`
-	ICMPTimeout                           int64          `yaml:"icmp-timeout" json:"icmp-timeout,omitempty"`
-	DisableICMPForwarding                 bool           `yaml:"disable-icmp-forwarding" json:"disable-icmp-forwarding,omitempty"`
-	CongestionController                  string         `yaml:"congestion-controller" json:"congestion-controller,omitempty"`
-	FileDescriptor                        int            `yaml:"file-descriptor" json:"file-descriptor"`
+
+	// Removed in favour of route-exclude-address-set / route-exclude-address.
+	// Kept only so the YAML decoder captures them and parseTun can fail loudly;
+	// otherwise an old config would silently keep routing bypass traffic into
+	// the TUN.
+	DeprecatedBypassRuleSet []string       `yaml:"bypass-rule-set" json:"bypass-rule-set,omitempty"`
+	DeprecatedBypassAddress []netip.Prefix `yaml:"bypass-address" json:"bypass-address,omitempty"`
+	IncludeUID              []uint32       `yaml:"include-uid" json:"include-uid,omitempty"`
+	IncludeUIDRange         []string       `yaml:"include-uid-range" json:"include-uid-range,omitempty"`
+	ExcludeUID              []uint32       `yaml:"exclude-uid" json:"exclude-uid,omitempty"`
+	ExcludeUIDRange         []string       `yaml:"exclude-uid-range" json:"exclude-uid-range,omitempty"`
+	ExcludeSrcPort          []uint16       `yaml:"exclude-src-port" json:"exclude-src-port,omitempty"`
+	ExcludeSrcPortRange     []string       `yaml:"exclude-src-port-range" json:"exclude-src-port-range,omitempty"`
+	ExcludeDstPort          []uint16       `yaml:"exclude-dst-port" json:"exclude-dst-port,omitempty"`
+	ExcludeDstPortRange     []string       `yaml:"exclude-dst-port-range" json:"exclude-dst-port-range,omitempty"`
+	IncludeAndroidUser      []int          `yaml:"include-android-user" json:"include-android-user,omitempty"`
+	IncludePackage          []string       `yaml:"include-package" json:"include-package,omitempty"`
+	ExcludePackage          []string       `yaml:"exclude-package" json:"exclude-package,omitempty"`
+	IncludeMACAddress       []string       `yaml:"include-mac-address" json:"include-mac-address,omitempty"`
+	ExcludeMACAddress       []string       `yaml:"exclude-mac-address" json:"exclude-mac-address,omitempty"`
+	EndpointIndependentNat  bool           `yaml:"endpoint-independent-nat" json:"endpoint-independent-nat,omitempty"`
+	UDPTimeout              int64          `yaml:"udp-timeout" json:"udp-timeout,omitempty"`
+	ICMPTimeout             int64          `yaml:"icmp-timeout" json:"icmp-timeout,omitempty"`
+	DisableICMPForwarding   bool           `yaml:"disable-icmp-forwarding" json:"disable-icmp-forwarding,omitempty"`
+	CongestionController    string         `yaml:"congestion-controller" json:"congestion-controller,omitempty"`
+	FileDescriptor          int            `yaml:"file-descriptor" json:"file-descriptor"`
 
 	Inet4RouteAddress        []netip.Prefix `yaml:"inet4-route-address" json:"inet4-route-address,omitempty"`
 	Inet6RouteAddress        []netip.Prefix `yaml:"inet6-route-address" json:"inet6-route-address,omitempty"`
@@ -1686,6 +1691,9 @@ func parseIPV6(rawCfg *RawConfig) {
 }
 
 func parseTun(rawTun RawTun, dns *DNS, general *General) error {
+	if len(rawTun.DeprecatedBypassRuleSet) > 0 || len(rawTun.DeprecatedBypassAddress) > 0 {
+		return errors.New("tun: 'bypass-rule-set' / 'bypass-address' are removed; use 'route-exclude-address-set' / 'route-exclude-address'")
+	}
 	tunAddressPrefix := dns.FakeIPRange
 	if !tunAddressPrefix.IsValid() {
 		tunAddressPrefix = netip.MustParsePrefix("198.18.0.1/16")
@@ -1717,8 +1725,6 @@ func parseTun(rawTun RawTun, dns *DNS, general *General) error {
 		RouteAddressSet:                       rawTun.RouteAddressSet,
 		RouteExcludeAddress:                   rawTun.RouteExcludeAddress,
 		RouteExcludeAddressSet:                rawTun.RouteExcludeAddressSet,
-		BypassRuleSet:                         rawTun.BypassRuleSet,
-		BypassAddress:                         rawTun.BypassAddress,
 		IncludeInterface:                      rawTun.IncludeInterface,
 		ExcludeInterface:                      rawTun.ExcludeInterface,
 		IncludeUID:                            rawTun.IncludeUID,
