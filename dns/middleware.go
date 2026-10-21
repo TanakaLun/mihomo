@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/lru"
+	"github.com/metacubex/mihomo/component/bypass"
 	"github.com/metacubex/mihomo/component/fakeip"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
@@ -159,11 +160,15 @@ func withFakeIP(skipper *fakeip.Skipper, fakePool *fakeip.Pool, fakePool6 *fakei
 				return next(ctx, r)
 			}
 
-			// When the eBPF inbound has an active bypass CIDR policy, resolve the
-			// real address first and keep it real if it falls inside the bypass
-			// set, so the kernel eBPF bypass can engage (matching sing-box).
+			// When any transparent inbound (eBPF, TUN) has an active bypass
+			// CIDR policy, resolve the real address first and keep it real if
+			// it falls inside the bypass set, so the kernel-level bypass can
+			// engage (matching sing-box). Hosts that are already faked skip
+			// the real resolution: their first query already decided they are
+			// not in the bypass set.
 			if q.Qtype == D.TypeA || q.Qtype == D.TypeAAAA {
-				if bypassSet := resolver.EBFPBypassIPSet.Load(); bypassSet != nil {
+				bypassSet := bypass.Global().Snapshot()
+				if bypassSet != nil && !fakeHostMapped(host, fakePool, fakePool6) {
 					if realMsg, err := next(ctx, r); err == nil && realMsg != nil {
 						if realMsgContainsBypass(realMsg, bypassSet) {
 							return realMsg, nil
@@ -212,8 +217,18 @@ func withFakeIP(skipper *fakeip.Skipper, fakePool *fakeip.Pool, fakePool6 *fakei
 	}
 }
 
+// fakeHostMapped reports whether the host already has a fake-ip mapping in
+// either address family's pool. When it has, the middleware can skip the real
+// resolution and answer the existing fake address directly.
+func fakeHostMapped(host string, fakePool *fakeip.Pool, fakePool6 *fakeip.Pool) bool {
+	if fakePool != nil && fakePool.ExistHost(host) {
+		return true
+	}
+	return fakePool6 != nil && fakePool6.ExistHost(host)
+}
+
 // realMsgContainsBypass reports whether a resolved DNS answer contains an
-// address inside the eBPF bypass set.
+// address inside the bypass set.
 func realMsgContainsBypass(msg *D.Msg, set *netipx.IPSet) bool {
 	for _, answer := range msg.Answer {
 		var addr netip.Addr
@@ -227,6 +242,7 @@ func realMsgContainsBypass(msg *D.Msg, set *netipx.IPSet) bool {
 				addr = netip.AddrFrom16([16]byte(rr.AAAA))
 			}
 		}
+		addr = addr.Unmap()
 		if addr.IsValid() && set.Contains(addr) {
 			return true
 		}

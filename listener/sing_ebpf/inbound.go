@@ -15,6 +15,7 @@ import (
 
 	ECommon "github.com/CHIZI-0618/sing-ebpf"
 	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/component/bypass"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
@@ -94,6 +95,7 @@ type Inbound struct {
 	sharedRewrite *sharedRewrite
 
 	bypassRuleSetAccess          sync.Mutex
+	bypassPublisher              *bypass.Publisher
 	localBypassRuleSet           []P.RuleProvider
 	localBypassRuleSetCB         io.Closer
 	localBypassRuleSetStarted    bool

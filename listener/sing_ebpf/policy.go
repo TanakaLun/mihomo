@@ -7,7 +7,7 @@ import (
 	"net/netip"
 
 	ECommon "github.com/CHIZI-0618/sing-ebpf"
-	"github.com/metacubex/mihomo/component/resolver"
+	"github.com/metacubex/mihomo/component/bypass"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/log"
 
@@ -39,6 +39,9 @@ func (i *Inbound) startBypassRuleSets() error {
 	}
 	register(&i.localBypassRuleSetStarted, &i.localBypassRuleSetCB)
 	register(&i.sharedBypassRuleSetStarted, &i.sharedBypassRuleSetCB)
+	if i.bypassPublisher == nil {
+		i.bypassPublisher = bypass.Global().Register("ebpf")
+	}
 	if err := i.refreshBypassCIDRsLocked(); err != nil {
 		// Roll the registrations back on failure so a later retry does not
 		// leave the inbound marked started with callbacks still registered.
@@ -55,6 +58,10 @@ func (i *Inbound) stopBypassRuleSets() {
 }
 
 func (i *Inbound) stopBypassRuleSetsLocked() {
+	if i.bypassPublisher != nil {
+		i.bypassPublisher.Close()
+		i.bypassPublisher = nil
+	}
 	for _, current := range []struct {
 		started  *bool
 		callback *io.Closer
@@ -91,10 +98,12 @@ func collectBypassPrefixes(ruleSets []P.RuleProvider) []netip.Prefix {
 		strategy := ruleSet.Strategy()
 		ipCidrStrategy, ok := strategy.(toIpCidr)
 		if !ok {
+			log.Warnln("[EBPF] bypass_rule_set %s: rule-set behavior has no IP-CIDR view, silently ignored (use behavior: ipcidr or classical)", ruleSet.Name())
 			continue
 		}
 		ipSet := ipCidrStrategy.ToIpCidr()
 		if ipSet == nil {
+			log.Warnln("[EBPF] bypass_rule_set %s: no IP-CIDR rules loaded, silently ignored", ruleSet.Name())
 			continue
 		}
 		prefixes = append(prefixes, ipSet.Prefixes()...)
@@ -163,16 +172,8 @@ func (i *Inbound) refreshBypassCIDRsLocked() error {
 	// Publish the effective bypass CIDR set to the DNS fake-ip middleware so
 	// domains whose real addresses fall inside it keep their real IP and the
 	// kernel eBPF bypass can engage.
-	if len(i.bypassCIDR) > 0 {
-		var builder netipx.IPSetBuilder
-		for _, prefix := range i.bypassCIDR {
-			builder.AddPrefix(prefix)
-		}
-		if bypassSet, buildErr := builder.IPSet(); buildErr == nil {
-			resolver.EBFPBypassIPSet.Store(bypassSet)
-		}
-	} else {
-		resolver.EBFPBypassIPSet.Store(nil)
+	if i.bypassPublisher != nil {
+		i.bypassPublisher.Publish(i.bypassCIDR)
 	}
 	return nil
 }

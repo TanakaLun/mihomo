@@ -71,6 +71,17 @@ func (p *Pool) Exist(ip netip.Addr) bool {
 	return p.store.Exist(ip)
 }
 
+// ExistHost returns whether a fake-ip mapping for host already exists,
+// without allocating a new address. Used by the DNS middleware to skip the
+// real resolution fast path for hosts that are already faked.
+func (p *Pool) ExistHost(host string) bool {
+	p.mux.Lock()
+	defer p.mux.Unlock()
+
+	_, exist := p.store.GetByHost(strings.ToLower(host))
+	return exist
+}
+
 // Gateway return gateway ip
 func (p *Pool) Gateway() netip.Addr {
 	return p.gateway

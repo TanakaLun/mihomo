@@ -14,9 +14,11 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/component/bypass"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/iface"
 	"github.com/metacubex/mihomo/component/resolver"
+	"github.com/metacubex/mihomo/component/route"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
 	LC "github.com/metacubex/mihomo/listener/config"
@@ -63,6 +65,12 @@ type Listener struct {
 	routeExcludeAddressMap   map[string]*netipx.IPSet
 	routeAddressSet          []*netipx.IPSet
 	routeExcludeAddressSet   []*netipx.IPSet
+
+	rtunnel         P.Tunnel
+	bypassPublisher *bypass.Publisher
+	bypassMutex     sync.Mutex
+	bypassPrefixes  []netip.Prefix
+	bypassRouter    route.Router
 
 	dnsServerIp []string
 }
@@ -322,6 +330,7 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 		options: options,
 		handler: handler,
 		tunName: tunName,
+		rtunnel: rpTunnel,
 	}
 	defer func() {
 		if err != nil {
@@ -365,6 +374,7 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 			}
 			iface.FlushCache()
 			resolver.ResetConnection() // reset resolver's connection after default interface changed
+			l.reapplyBypassRoutes()
 		})
 		err = defaultInterfaceMonitor.Start()
 		if err != nil {
@@ -471,6 +481,15 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 
 	}
 
+	if len(options.BypassRuleSet) > 0 {
+		if err = l.startBypassRuleSet(options.BypassRuleSet); err != nil {
+			return
+		}
+		if l.ruleUpdateCallbackCloser == nil {
+			l.ruleUpdateCallbackCloser = rpTunnel.RuleUpdateCallback().Register(l.ruleUpdateCallback)
+		}
+	}
+
 	err = l.buildAndroidRules(&tunOptions)
 	if err != nil {
 		err = E.Cause(err, "build android rules")
@@ -513,6 +532,10 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 	}
 	l.tunStack = tunStack
 
+	// The TUN interface now exists on Windows; install the initial physical
+	// bypass routes (no-op elsewhere).
+	l.reapplyBypassRoutes()
+
 	if l.autoRedirect != nil {
 		if len(l.options.RouteAddressSet) > 0 && len(l.routeAddressSet) == 0 {
 			l.routeAddressSet = emptyAddressSet // without this we can't call UpdateRouteAddressSet after Start
@@ -532,7 +555,9 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
 				return
 			}
 			l.autoRedirect.UpdateRouteAddressSet()
-			l.ruleUpdateCallbackCloser = rpTunnel.RuleUpdateCallback().Register(l.ruleUpdateCallback)
+			if l.ruleUpdateCallbackCloser == nil {
+				l.ruleUpdateCallbackCloser = rpTunnel.RuleUpdateCallback().Register(l.ruleUpdateCallback)
+			}
 		}
 	}
 
@@ -557,6 +582,9 @@ func (l *Listener) ruleUpdateCallback(ruleProvider P.RuleProvider) {
 	if slices.Contains(l.options.RouteExcludeAddressSet, name) {
 		l.updateRule(ruleProvider, true, true)
 		return
+	}
+	if slices.Contains(l.options.BypassRuleSet, name) {
+		l.updateBypassRuleSet()
 	}
 }
 
@@ -593,6 +621,82 @@ func (l *Listener) updateRule(ruleProvider P.RuleProvider, exclude bool, update 
 	if update && l.autoRedirect != nil {
 		l.autoRedirect.UpdateRouteAddressSet()
 	}
+}
+
+// startBypassRuleSet validates the configured bypass-rule-set tags and
+// registers a DNS bypass publisher for the union of their CIDRs. Physical
+// bypass routes (Windows) are installed by reapplyBypassRoutes once the TUN
+// interface is up.
+func (l *Listener) startBypassRuleSet(tags []string) error {
+	l.bypassMutex.Lock()
+	defer l.bypassMutex.Unlock()
+	rt := l.rtunnel
+	for _, tag := range tags {
+		if _, loaded := rt.RuleProviders()[tag]; !loaded {
+			return E.New("parse bypass-rule-set: rule-set not found: ", tag)
+		}
+	}
+	l.bypassPublisher = bypass.Global().Register("tun")
+	prefixes := collectRuleSetPrefixes(l.resolveBypassProviders(tags))
+	l.bypassPrefixes = prefixes
+	l.bypassPublisher.Publish(prefixes)
+	log.Infoln("[TUN] bypass-rule-set: %d CIDRs published", len(prefixes))
+	return nil
+}
+
+// updateBypassRuleSet republishes the bypass CIDR union and reconciles the
+// kernel bypass routes (Windows) after a rule-set update.
+func (l *Listener) updateBypassRuleSet() {
+	l.bypassMutex.Lock()
+	defer l.bypassMutex.Unlock()
+	if l.bypassPublisher == nil {
+		return
+	}
+	prefixes := collectRuleSetPrefixes(l.resolveBypassProviders(l.options.BypassRuleSet))
+	l.bypassPrefixes = prefixes
+	l.bypassPublisher.Publish(prefixes)
+	l.applyBypassRoutesLocked(prefixes)
+	log.Debugln("[TUN] bypass-rule-set: republished %d CIDRs", len(prefixes))
+}
+
+// reapplyBypassRoutes re-applies the current bypass routes (Windows) after a
+// network change so the physical next hops stay correct.
+func (l *Listener) reapplyBypassRoutes() {
+	l.bypassMutex.Lock()
+	defer l.bypassMutex.Unlock()
+	l.applyBypassRoutesLocked(l.bypassPrefixes)
+}
+
+// resolveBypassProviders maps the configured bypass-rule-set tags to their
+// rule providers. Missing providers are reported and skipped; startup
+// validation happens in startBypassRuleSet.
+func (l *Listener) resolveBypassProviders(tags []string) []P.RuleProvider {
+	rt := l.rtunnel
+	providers := make([]P.RuleProvider, 0, len(tags))
+	for _, tag := range tags {
+		rp, loaded := rt.RuleProviders()[tag]
+		if !loaded {
+			log.Warnln("[TUN] bypass-rule-set: rule-set not found: %s", tag)
+			continue
+		}
+		providers = append(providers, rp)
+	}
+	return providers
+}
+
+func collectRuleSetPrefixes(providers []P.RuleProvider) []netip.Prefix {
+	var prefixes []netip.Prefix
+	for _, rp := range providers {
+		ipCidr, ok := rp.Strategy().(toIpCidr)
+		if !ok {
+			log.Warnln("[TUN] bypass-rule-set: rule-set %s has no IP-CIDR view, ignored (use behavior: ipcidr or classical)", rp.Name())
+			continue
+		}
+		if ipSet := ipCidr.ToIpCidr(); ipSet != nil {
+			prefixes = append(prefixes, ipSet.Prefixes()...)
+		}
+	}
+	return prefixes
 }
 
 func (l *Listener) OnReload() {
@@ -675,6 +779,11 @@ func (l *Listener) Close() error {
 	}
 	if l.cDialerInterfaceFinder != nil {
 		dialer.DefaultInterfaceFinder.CompareAndSwap(l.cDialerInterfaceFinder, nil)
+	}
+	l.resetBypassRoutes()
+	if l.bypassPublisher != nil {
+		l.bypassPublisher.Close()
+		l.bypassPublisher = nil
 	}
 	return common.Close(
 		l.ruleUpdateCallbackCloser,

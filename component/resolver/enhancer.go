@@ -6,7 +6,7 @@ var DefaultHostMapper Enhancer
 
 // EBFPFakeIPRanges holds the DNS fake-ip prefixes registered by the DNS
 // enhancer and consumed by the TC eBPF inbound (TCConfig.FakeIPIPv4/6). It
-// mirrors the EBFPBypassIPSet leaf-store pattern so the adapter does not need
+// mirrors the component/bypass leaf-store pattern so the adapter does not need
 // to import the config package.
 var EBFPFakeIPRanges EBPPrefixStore
 
