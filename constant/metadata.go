@@ -45,6 +45,7 @@ const (
 	SHADOWQUIC
 	INNER
 	EBPF
+	TAILSCALE
 )
 
 type AddrType byte
@@ -129,6 +130,8 @@ func (t Type) String() string {
 		return "Inner"
 	case EBPF:
 		return "EBPF"
+	case TAILSCALE:
+		return "Tailscale"
 	default:
 		return "Unknown"
 	}
@@ -181,6 +184,8 @@ func ParseType(t string) (*Type, error) {
 		res = INNER
 	case "EBPF":
 		res = EBPF
+	case "TAILSCALE":
+		res = TAILSCALE
 	default:
 		return nil, fmt.Errorf("unknown type: %s", t)
 	}

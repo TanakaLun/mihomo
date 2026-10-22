@@ -45,7 +45,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test -count=1 -tags "with_gvisor" ./component/route/... ./component/bypass/... ./listener/sing_tun/... ./dns/...
+          go test -count=1 -tags "with_gvisor" ./component/route/... ./component/bypass/... ./listener/sing_tun/... ./dns/... ./adapter/outbound/...
 
       - name: Test eBPF packages with with_gvisor with_ebpf
         shell: bash

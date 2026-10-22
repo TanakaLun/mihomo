@@ -1,6 +1,6 @@
 # features.yaml — 本分支特性示例配置
 #
-# 集中演示 Alpha 分支的两个核心特性：
+# 集中演示 Alpha 分支的三个核心特性：
 #   1. TUN 内核级 CIDR 旁路（route-exclude-address-set / route-exclude-address）
 #      - 目的 CIDR 命中集合的流量在内核层面绕过 TUN，不进入 mihomo 用户态；
 #      - Windows 下额外安装物理接口上的更具体路由，流量完全不进 wintun；
@@ -8,10 +8,14 @@
 #   2. eBPF 透明入站（listeners[].type=ebpf）
 #      - local/shared 数据面（cgroup / tc / socket_assign / packet_rewrite）；
 #      - bypass-rule-set / bypass-exclude / include-source-cidr 等内核直连策略。
+#   3. Tailscale 网关（type=tailscale）
+#      - 作为 Subnet Router（advertise-routes）与 Exit Node（advertise-exit-node）；
+#      - 从 Tailnet 接入的流量以 IN-TYPE,TAILSCALE 进入规则引擎，走正常分流。
 #
 # 此文件是示例配置：直接使用前请按需裁剪、核对端口与路径。详见
 #   - docs/tun-bypass-rule-set.md
 #   - docs/ebpf-inbound.md
+#   - docs/tailscale-inbound.md
 
 mixed-port: 7890
 allow-lan: true
@@ -95,14 +99,36 @@ proxies:
   - name: DIRECT
     type: direct
 
+  # Tailscale 网关：接收 Tailnet 流量并广播子网/出口节点（见 docs/tailscale-inbound.md）
+  - name: TS-gateway
+    type: tailscale
+    hostname: my-gateway
+    auth-key: tskey-auth-xxxxx        # 换成真实 auth key
+    udp: true
+    accept-routes: true               # 接受其它节点广播的子网路由
+    # listen-port: 41641              # 固定 magicsock 端口；
+                                      #   与 TUN 共存时加到 tun.exclude-src-port 避免回环
+    advertise-routes:                 # Subnet Router：向 Tailnet 广播本机可达子网
+      - 192.168.0.0/24
+    advertise-exit-node: true         # 声明为 Exit Node（广播 0.0.0.0/0 与 ::/0）
+
 proxy-groups:
   - name: 代理
+    type: select
+    proxies: [DIRECT]
+
+  # Tailnet 接入流量专用组（可选，便于观察 IN-TYPE,TAILSCALE 分流）
+  - name: Tailnet-入口
     type: select
     proxies: [DIRECT]
 
 rules:
   - RULE-SET,geoip-cn,DIRECT
   - GEOSITE,cn,DIRECT
+  # Tailscale tailnet 地址段必须在 GEOIP,CN 与 MATCH 之前（100.64.0.0/10 属私网段）
+  - IP-CIDR,100.64.0.0/10,TS-gateway,no-resolve
+  - IP-CIDR6,fd7a:115c:a1e0::/48,TS-gateway,no-resolve
+  - IN-TYPE,TAILSCALE,Tailnet-入口
   - MATCH,代理
 
 # 备注
@@ -110,3 +136,4 @@ rules:
 #   其它流量；二者各自的内核旁路互不干扰。
 # - Windows 上 TUN 旁路需要管理员权限（改写路由表 + wintun）。
 # - eBPF inbound 需要 with_ebpf 构建标签（见 docs/ebpf-inbound.md 的 Build 一节）。
+# - Tailscale 出站需要 with_gvisor 构建标签（见 docs/tailscale-inbound.md）。
