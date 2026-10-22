@@ -187,8 +187,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --depth=1 https://github.com/MetaCubeX/mihomo.git Alpha
-          lead="$(git rev-list --count FETCH_HEAD..HEAD 2>/dev/null || echo 0)"
+          upstream_sha="$(git ls-remote https://github.com/MetaCubeX/mihomo.git refs/heads/Alpha | awk '{print $1}')"
+          if git rev-list --count "${upstream_sha}"..HEAD >/dev/null 2>&1; then
+            lead="$(git rev-list --count "${upstream_sha}"..HEAD)"
+          else
+            git fetch --no-tags --filter=blob:none https://github.com/MetaCubeX/mihomo.git Alpha
+            lead="$(git rev-list --count FETCH_HEAD..HEAD 2>/dev/null || echo 0)"
+          fi
           echo "RELEASE_TAG=v1.19.33-${GITHUB_REPOSITORY_OWNER}-${lead}" >> "$GITHUB_ENV"
 
       - name: Assemble release notes
@@ -221,7 +226,7 @@ jobs:
           set -euo pipefail
           gh release create "${RELEASE_TAG}" \
             --repo "${{ github.repository }}" \
-            --title "mihomo Meta — eBPF inbound (${RELEASE_TAG})" \
+            --title "mihomo Meta — eBPF inbound (cilium/ebpf backend)" \
             --notes-file notes.md \
             --prerelease || true
           gh release edit "${RELEASE_TAG}" \
