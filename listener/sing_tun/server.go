@@ -605,6 +605,15 @@ type toIpCidr interface {
 func (l *Listener) updateRule(ruleProvider P.RuleProvider, exclude bool, update bool) {
 	l.ruleUpdateMutex.Lock()
 	defer l.ruleUpdateMutex.Unlock()
+	// The route-address maps are created only for the Linux nftables
+	// auto-redirect path. With auto-redirect disabled these maps are never
+	// allocated, yet the bypass callback (registered for route-exclude-address-set)
+	// still invokes this function for its tags — writing to a nil map would
+	// panic. The bypass pipeline (updateBypassRuleSet) already handles those
+	// rule sets; the maps only feed autoRedirect, so return early.
+	if l.routeAddressMap == nil && l.routeExcludeAddressMap == nil {
+		return
+	}
 	name := ruleProvider.Name()
 	switch rp := ruleProvider.Strategy().(type) {
 	case toIpCidr:
