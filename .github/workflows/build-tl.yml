@@ -174,8 +174,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      RELEASE_TAG: v1.19.33-TanakaLun
     steps:
       - uses: actions/checkout@v6
         with:
@@ -184,6 +182,14 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           path: artifacts
+
+      - name: Compute release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 https://github.com/MetaCubeX/mihomo.git Alpha
+          lead="$(git rev-list --count FETCH_HEAD..HEAD 2>/dev/null || echo 0)"
+          echo "RELEASE_TAG=v1.19.33-${GITHUB_REPOSITORY_OWNER}-${lead}" >> "$GITHUB_ENV"
 
       - name: Assemble release notes
         shell: bash
@@ -215,7 +221,7 @@ jobs:
           set -euo pipefail
           gh release create "${RELEASE_TAG}" \
             --repo "${{ github.repository }}" \
-            --title "mihomo Meta — eBPF inbound + TUN bypass (${RELEASE_TAG})" \
+            --title "mihomo Meta — eBPF inbound (${RELEASE_TAG})" \
             --notes-file notes.md \
             --prerelease || true
           gh release edit "${RELEASE_TAG}" \
