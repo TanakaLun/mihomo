@@ -226,7 +226,7 @@ jobs:
           set -euo pipefail
           gh release create "${RELEASE_TAG}" \
             --repo "${{ github.repository }}" \
-            --title "mihomo Meta — eBPF inbound (cilium/ebpf backend)" \
+            --title "${RELEASE_TAG}" \
             --notes-file notes.md \
             --prerelease || true
           gh release edit "${RELEASE_TAG}" \
