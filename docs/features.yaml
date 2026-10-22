@@ -1,0 +1,112 @@
+# features.yaml — 本分支特性示例配置
+#
+# 集中演示 Alpha 分支的两个核心特性：
+#   1. TUN 内核级 CIDR 旁路（route-exclude-address-set / route-exclude-address）
+#      - 目的 CIDR 命中集合的流量在内核层面绕过 TUN，不进入 mihomo 用户态；
+#      - Windows 下额外安装物理接口上的更具体路由，流量完全不进 wintun；
+#      - DNS fake-ip 联动：命中集合的域名回真实 IP，让旁路真正生效。
+#   2. eBPF 透明入站（listeners[].type=ebpf）
+#      - local/shared 数据面（cgroup / tc / socket_assign / packet_rewrite）；
+#      - bypass-rule-set / bypass-exclude / include-source-cidr 等内核直连策略。
+#
+# 此文件是示例配置：直接使用前请按需裁剪、核对端口与路径。详见
+#   - docs/tun-bypass-rule-set.md
+#   - docs/ebpf-inbound.md
+
+mixed-port: 7890
+allow-lan: true
+mode: rule
+log-level: info
+ipv6: true
+
+dns:
+  enable: true
+  ipv6: true
+  listen: 0.0.0.0:1053
+  enhanced-mode: fake-ip      # fake-ip 下自动做旁路 DNS 联动（命中集合回真实 IP）
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - "*.lan"
+    - "*.local"
+  default-nameserver:
+    - 223.5.5.5
+    - 1.12.12.12
+  nameserver:
+    - https://doh.pub/dns-query
+    - 223.5.5.5
+  nameserver-policy:
+    "geosite:cn":
+      - 223.5.5.5
+      - 1.12.12.12
+
+tun:
+  enable: true
+  stack: mixed                # system / gvisor / mixed
+  device: meta
+  dns-hijack:
+    - any:53
+  auto-route: true            # 建议开启：否则 TUN 不接管默认路由，
+                              #   Windows 旁路路由也失去意义
+  # strict-route: true
+  route-exclude-address-set:  # # TUN 内核旁路（规则集驱动、可热更新）
+    - geoip-cn
+  route-exclude-address:      # TUN 内核旁路（静态 CIDR，叠加生效）
+    - 100.64.0.0/10           # 例如让 Tailscale tailnet 走物理网卡
+  # route-address:            # 覆盖默认路由表（避免与旁路前缀同宽）
+
+listeners:
+  - name: ebpf-local
+    type: ebpf
+    network: [tcp, udp]
+    local:                    # 本机拦截
+      enable: true
+      data-plane: cgroup      # cgroup（默认）/ tc
+      dns-mode: hijack        # hijack（默认）/ respect_policy / off
+      ipv6: true
+      bypass-private-address: true
+      bypass-rule-set:        # 目标 IP 命中这些 rule-set 的 CIDR 时内核直连
+        - geoip-cn
+      bypass-exclude: []      # 命中则强制拦截走代理（优先于 bypass）
+    shared:                   # 热点转发（可选）
+      enable: false
+      data-plane: packet_rewrite  # packet_rewrite（默认）/ socket_assign
+      interface: [wlan0]
+      # default-interface: false  # 允许把默认接口也作为热点
+      include-source-cidr: [] # 配置后默认只拦命中源（未命中放行）
+      include-mac-address: []
+
+rule-providers:
+  geoip-cn:
+    type: http
+    behavior: ipcidr          # ipcidr / classical 均可被 route-exclude-address-set
+    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geoip/cn.txt"
+    path: ./ruleset/geoip-cn.txt
+    interval: 86400
+
+  # CN_Domain 之类规则集仅供 rules 引用，与旁路无关
+  cn-domain:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geosite/cn.txt"
+    path: ./ruleset/cn-domain.txt
+    interval: 86400
+
+proxies:
+  - name: DIRECT
+    type: direct
+
+proxy-groups:
+  - name: 代理
+    type: select
+    proxies: [DIRECT]
+
+rules:
+  - RULE-SET,geoip-cn,DIRECT
+  - GEOSITE,cn,DIRECT
+  - MATCH,代理
+
+# 备注
+# - eBPF inbound 与 TUN 可共存：eBPF 处理本机（cgroup/TC 决策层），TUN 处理
+#   其它流量；二者各自的内核旁路互不干扰。
+# - Windows 上 TUN 旁路需要管理员权限（改写路由表 + wintun）。
+# - eBPF inbound 需要 with_ebpf 构建标签（见 docs/ebpf-inbound.md 的 Build 一节）。
