@@ -49,8 +49,12 @@ func TestSharedUDPClientTableSweepIdle(t *testing.T) {
 	}
 
 	state.lastActive.Store(time.Now().Add(-10 * time.Minute).UnixNano())
-	if _, available := table.sweepIdleAt(time.Now(), 5*time.Minute); available {
+	releases, _, available := table.sweepIdleAt(time.Now(), 5*time.Minute)
+	if available {
 		t.Fatal("reaping the only entry should leave no pending expiry")
+	}
+	if len(releases) != 1 {
+		t.Fatalf("sweepIdleAt releases = %d, want 1", len(releases))
 	}
 	if _, loaded := table.load(client); loaded {
 		t.Fatal("idle shared client state should be reaped")
