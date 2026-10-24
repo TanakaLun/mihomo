@@ -379,9 +379,12 @@ func (s *sharedRewrite) runFlowJanitor(ctx context.Context, done chan<- struct{}
 		now := time.Now()
 		if sweepRequested {
 			// Drop exhausted userspace UDP client entries on the same cadence
-			// as the flow sweep. Kernel flow generations are reclaimed by
-			// SweepOrphanedFlows below and the kernel's own timeout.
-			s.sharedUDPClientTable.sweepIdleAt(now, s.inbound.udpTimeout)
+			// as the flow sweep, releasing the kernel flow references their
+			// bindings held. Only then does SweepOrphanedFlows below see
+			// flowReferences==0 and retire the kernel generations; the kernel's
+			// own timeout reclaims the rest.
+			releases, _, _ := s.sharedUDPClientTable.sweepIdleAt(now, s.inbound.udpTimeout)
+			s.releaseFlows(releases)
 		}
 		if !sweepRequested {
 			_, flushErr := backend.FlushReleasedTCPFlows(now, sharedFlowReleaseFlushBudget)

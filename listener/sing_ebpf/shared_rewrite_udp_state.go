@@ -374,18 +374,18 @@ func (t *sharedUDPClientTable) deleteClient(client netip.AddrPort, expectedState
 }
 
 // sweepIdleAt drops every client state that has not seen UDP activity for at
-// least idleTimeout. Only the userspace mirror and its redirect reference
-// bookkeeping are released here (deleteShared); the kernel flow generations
-// the bindings point at are left to the flow janitor's SweepOrphanedFlows and
-// the kernel's own timeout, matching the local path. Returns the earliest
-// remaining expiry and whether a candidate is left.
-func (t *sharedUDPClientTable) sweepIdleAt(now time.Time, idleTimeout time.Duration) (time.Time, bool) {
+// least idleTimeout. The userspace mirror, its redirect reference bookkeeping
+// and the kernel flow references the bindings hold are all released here
+// (deleteShared); the caller must hand the returned releases to ReleaseFlow so
+// the backend's flowReferences drop to zero and SweepOrphanedFlows can retire
+// the kernel generations. Returns the earliest remaining expiry and whether a
+// candidate is left.
+func (t *sharedUDPClientTable) sweepIdleAt(now time.Time, idleTimeout time.Duration) (releases []sharedUDPRedirectRelease, next time.Time, more bool) {
 	type expiredKey struct {
 		client netip.AddrPort
 		state  *sharedUDPClientState
 	}
 	deadline := now.Add(-idleTimeout).UnixNano()
-	var next time.Time
 	for index := range t.clientShards {
 		shard := &t.clientShards[index]
 		shard.access.RLock()
@@ -407,10 +407,10 @@ func (t *sharedUDPClientTable) sweepIdleAt(now time.Time, idleTimeout time.Durat
 		}
 		shard.access.RUnlock()
 		for _, key := range expired {
-			t.deleteShared(key.client, key.state)
+			releases = append(releases, t.deleteShared(key.client, key.state)...)
 		}
 	}
-	return next, !next.IsZero()
+	return releases, next, !next.IsZero()
 }
 
 func (t *sharedUDPClientTable) retainRedirectLocked(reference sharedUDPRedirectReference) {
