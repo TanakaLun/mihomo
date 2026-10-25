@@ -103,7 +103,11 @@ func collectBypassPrefixes(ruleSets []P.RuleProvider) []netip.Prefix {
 		}
 		ipSet := ipCidrStrategy.ToIpCidr()
 		if ipSet == nil {
-			log.Warnln("[EBPF] bypass_rule_set %s: no IP-CIDR rules loaded, silently ignored", ruleSet.Name())
+			// The provider has not finished loading yet (rule sets initialize
+			// asynchronously after config parse). Every rule-set update re-runs
+			// this refresh, so the CIDRs are applied automatically once the
+			// provider is ready. Stay quiet here: a rule-set flagged on every
+			// unrelated update while still downloading only spams the log.
 			continue
 		}
 		prefixes = append(prefixes, ipSet.Prefixes()...)
