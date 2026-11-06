@@ -116,6 +116,10 @@ type Inbound struct {
 	counters        ebpfCounters
 	fakeIPICMPReply bool
 
+	tcJanitorAccess sync.Mutex
+	tcJanitorCancel context.CancelFunc
+	tcJanitorDone   chan struct{}
+
 	protectRegistered       bool
 	unregisterSocketProtect func()
 
@@ -562,6 +566,7 @@ func (i *Inbound) start() error {
 		if err := backend.Enable(); err != nil {
 			return err
 		}
+		i.startTCAssignmentJanitor()
 	}
 	if backend != nil || i.cgroupBackendInstance() != nil || i.sharedRewrite != nil {
 		if err := i.startTCInterfaceMonitor(); err != nil {
@@ -807,6 +812,7 @@ func (i *Inbound) Close() error {
 			i.unregisterSocketProtect = nil
 		}
 		monitorErr := i.stopTCInterfaceMonitor()
+		i.stopTCAssignmentJanitor()
 		i.stopBypassRuleSets()
 		var sharedRewriteErr error
 		if i.sharedRewrite != nil {
