@@ -67,7 +67,7 @@ require (
 
 require (
 	github.com/cilium/ebpf v0.22.1-0.20260910105759-60e81073fdc6 // indirect
-	github.com/sagernet/sing v0.9.7-0.20260929150544-6f21f2425a95 // indirect
+	github.com/sagernet/sing v0.9.7-0.20261023115510-03a6cce64bf7 // indirect
 )
 
 // lastest version compatible with golang1.20
@@ -86,7 +86,7 @@ require (
 )
 
 require (
-	github.com/CHIZI-0618/sing-ebpf v0.1.0-alpha.13
+	github.com/CHIZI-0618/sing-ebpf v0.1.0-beta.1
 	github.com/RyuaNerin/go-krypto v1.3.0 // indirect
 	github.com/Yawning/aez v0.0.0-20211027044916-e49e68abd344 // indirect
 	github.com/ajg/form v1.7.1 // indirect

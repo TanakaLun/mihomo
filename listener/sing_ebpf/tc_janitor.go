@@ -120,7 +120,7 @@ func (i *Inbound) runTCAssignmentJanitor(ctx context.Context, done chan<- struct
 		if maxIdle <= 0 {
 			maxIdle = 5 * time.Minute
 		}
-		result, sweepErr := backend.SweepAssignments(maxIdle, tcJanitorSweepBudget)
+		result, sweepErr := backend.SweepFlows(maxIdle, tcJanitorSweepBudget)
 		if sweepErr != nil {
 			if i.tcBackend() == nil {
 				return
