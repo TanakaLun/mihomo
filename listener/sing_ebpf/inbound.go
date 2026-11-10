@@ -637,6 +637,13 @@ func (i *Inbound) selfBypassMode() string {
 	if i.selfBypassCgroup {
 		return "cgroup_socket_cookie"
 	}
+	// Report why the stronger cgroup hook set was not usable: on Android the
+	// socket-release hook is often denied by SELinux and the core falls back to
+	// userspace cookie registration. The reason is empty when the fallback is
+	// intentional or the socket-create mode is active.
+	if reason := i.selfBypass.FallbackReason(); reason != "" {
+		return "userspace_socket_cookie (" + reason + ")"
+	}
 	return "userspace_socket_cookie"
 }
 

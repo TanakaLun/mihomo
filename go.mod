@@ -86,7 +86,7 @@ require (
 )
 
 require (
-	github.com/CHIZI-0618/sing-ebpf v0.1.0-beta.1
+	github.com/CHIZI-0618/sing-ebpf v0.1.0-beta.2
 	github.com/RyuaNerin/go-krypto v1.3.0 // indirect
 	github.com/Yawning/aez v0.0.0-20211027044916-e49e68abd344 // indirect
 	github.com/ajg/form v1.7.1 // indirect
