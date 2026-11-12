@@ -288,16 +288,15 @@ func parsePortRanges(name string, ports []uint16, ranges []string) ([]PortRange,
 }
 
 // normalizeBypassExclude masks and validates the bypass-exclude prefixes that
-// are force-intercepted ahead of any bypass decision. The backend's
-// force-intercept slot is a single prefix per address family, so at most one
-// IPv4 and one IPv6 prefix are accepted.
+// are force-intercepted ahead of any bypass decision. The backend compiles
+// every force-intercept prefix into an LPM trie, so any number of IPv4/IPv6
+// prefixes are accepted; duplicates are dropped while order is preserved.
 func normalizeBypassExclude(name string, prefixes []netip.Prefix) ([]netip.Prefix, error) {
 	if len(prefixes) == 0 {
 		return nil, nil
 	}
 	result := make([]netip.Prefix, 0, len(prefixes))
-	seenIPv4 := netip.Prefix{}
-	seenIPv6 := netip.Prefix{}
+	seen := make(map[netip.Prefix]struct{}, len(prefixes))
 	for _, prefix := range prefixes {
 		if !prefix.IsValid() {
 			return nil, E.New(name, " contains an invalid prefix")
@@ -306,17 +305,10 @@ func normalizeBypassExclude(name string, prefixes []netip.Prefix) ([]netip.Prefi
 		if prefix.Addr().Is4In6() && prefix.Bits() >= 96 {
 			prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96).Masked()
 		}
-		if prefix.Addr().Is4() {
-			if seenIPv4.IsValid() {
-				return nil, E.New(name, " accepts at most one IPv4 prefix; got both ", seenIPv4, " and ", prefix)
-			}
-			seenIPv4 = prefix
-		} else {
-			if seenIPv6.IsValid() {
-				return nil, E.New(name, " accepts at most one IPv6 prefix; got both ", seenIPv6, " and ", prefix)
-			}
-			seenIPv6 = prefix
+		if _, loaded := seen[prefix]; loaded {
+			continue
 		}
+		seen[prefix] = struct{}{}
 		result = append(result, prefix)
 	}
 	return result, nil

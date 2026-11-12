@@ -4,7 +4,6 @@ package sing_ebpf
 
 import (
 	"net/netip"
-	"strings"
 	"testing"
 
 	commonEBPF "github.com/CHIZI-0618/sing-ebpf"
@@ -31,13 +30,26 @@ func TestNormalizeBypassExclude(t *testing.T) {
 	if got[0].String() != "100.0.0.0/9" {
 		t.Fatalf("expected masked prefix, got %s", got[0])
 	}
-	// two v4 is an error
-	if _, err = normalizeBypassExclude("local.bypass-exclude", []netip.Prefix{v4, netip.MustParsePrefix("10.0.0.0/8")}); err == nil {
-		t.Fatal("expected two IPv4 prefixes to be rejected")
+	// multiple prefixes per family are accepted: the backend force-intercept
+	// is an LPM trie, not a single slot.
+	got, err = normalizeBypassExclude("local.bypass-exclude", []netip.Prefix{v4, netip.MustParsePrefix("10.0.0.0/8")})
+	if err != nil {
+		t.Fatalf("two IPv4 prefixes must be accepted: %v", err)
 	}
-	// two v6 is an error
-	if _, err = normalizeBypassExclude("local.bypass-exclude", []netip.Prefix{v6, netip.MustParsePrefix("fd00::/8")}); err == nil {
-		t.Fatal("expected two IPv6 prefixes to be rejected")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 IPv4 prefixes, got %d", len(got))
+	}
+	got, err = normalizeBypassExclude("local.bypass-exclude", []netip.Prefix{v6, netip.MustParsePrefix("fd00::/8")})
+	if err != nil {
+		t.Fatalf("two IPv6 prefixes must be accepted: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 IPv6 prefixes, got %d", len(got))
+	}
+	// duplicate prefixes are collapsed
+	got, err = normalizeBypassExclude("local.bypass-exclude", []netip.Prefix{v4, v4})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("expected duplicate prefixes to collapse, got %v, %v", got, err)
 	}
 	// IPv4-mapped IPv6 is converted to its IPv4 form
 	mapped := netip.MustParsePrefix("::ffff:100.64.0.0/104")
@@ -49,27 +61,6 @@ func TestNormalizeBypassExclude(t *testing.T) {
 	got, err = normalizeBypassExclude("local.bypass-exclude", nil)
 	if err != nil || got != nil {
 		t.Fatalf("expected nil,nil for empty input, got %v,%v", got, err)
-	}
-}
-
-func TestBypassExcludeConflict(t *testing.T) {
-	i := &Inbound{
-		localBypassExclude:  []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10")},
-		sharedBypassExclude: []netip.Prefix{netip.MustParsePrefix("fd7a:115c:a1e0::/48")},
-	}
-	if err := i.validateBypassExcludeConflicts(); err != nil {
-		t.Fatal(err)
-	}
-	// fakeip v4 collides with local v4
-	i.fakeIPIPv4Prefix = netip.MustParsePrefix("198.18.0.0/16")
-	if err := i.validateBypassExcludeConflicts(); err == nil || !strings.Contains(err.Error(), "conflicts") {
-		t.Fatalf("expected fakeip conflict error, got %v", err)
-	}
-	i.fakeIPIPv4Prefix = netip.Prefix{}
-	// fakeip v6 collides with shared v6
-	i.fakeIPIPv6Prefix = netip.MustParsePrefix("fdfe:dcba:9876::/64")
-	if err := i.validateBypassExcludeConflicts(); err == nil || !strings.Contains(err.Error(), "conflicts") {
-		t.Fatalf("expected fakeip conflict error, got %v", err)
 	}
 }
 
@@ -87,18 +78,23 @@ func TestCompileActionPolicyBypassExclude(t *testing.T) {
 	}
 }
 
-func TestCompileActionPolicyConflictingBypassExclude(t *testing.T) {
+// Fake-ip and bypass-exclude prefixes of the same address family are compiled
+// into the same force LPM trie; they must not be rejected as "conflicting".
+func TestCompileActionPolicyFakeIPWithBypassExclude(t *testing.T) {
 	i := &Inbound{
 		enableTCP: true,
 		enableUDP: true,
 		localPolicy: localUIDPolicy{
 			BypassPrivateAddress: true,
 		},
-		localBypassExclude: []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10")},
-		fakeIPIPv4Prefix:   netip.MustParsePrefix("198.18.0.0/16"),
+		localBypassExclude: []netip.Prefix{
+			netip.MustParsePrefix("100.64.0.0/10"),
+			netip.MustParsePrefix("203.0.113.0/24"),
+		},
+		fakeIPIPv4Prefix: netip.MustParsePrefix("198.18.0.0/16"),
 	}
-	if _, err := i.compileActionPolicy(); err == nil {
-		t.Fatal("expected fakeip conflict to abort policy compilation")
+	if _, err := i.compileActionPolicy(); err != nil {
+		t.Fatalf("fake-ip and bypass-exclude should coexist: %v", err)
 	}
 }
 

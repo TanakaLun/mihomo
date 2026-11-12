@@ -147,11 +147,10 @@ Field behavior:
   force-intercepted ahead of every bypass decision. Traffic to these prefixes
   is always redirected to the proxy, even when `bypass-private-address`,
   `bypass-port`, or another bypass rule would otherwise let it pass in kernel.
-  The kernel-level force-intercept check runs before all bypass checks.
-  At most one IPv4 and one IPv6 prefix is accepted per scope (mirroring the
-  backend's single force-intercept slot per address family). A prefix that
-  overlaps the DNS fake-ip range is rejected at startup because fake-ip already
-  occupies that slot; use `redir-host` DNS mode when you need bypass-exclude.
+  The kernel-level force-intercept check runs before all bypass checks. Any
+  number of IPv4/IPv6 prefixes are accepted per scope (the force-intercept set
+  is an LPM trie); duplicates are dropped, and prefixes may coexist with the
+  DNS fake-ip range in the same address family.
   Typical use: keep a VPN/CGNAT range like Tailscale `100.64.0.0/10`
   intercepted so it can be routed through a proxy node.
   > **Tailscale example**: with `local.bypass-private-address: true`, tailnet

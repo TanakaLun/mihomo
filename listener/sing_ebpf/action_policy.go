@@ -24,39 +24,11 @@ func validateActionPolicyScope(policy commonEBPF.ActionPolicy) error {
 	return nil
 }
 
-// validateBypassExcludeConflicts rejects bypass-exclude prefixes that would
-// collide with the fake-ip force-intercept slot. The backend's force-intercept
-// is a single prefix per address family; fake-ip occupies the same slot, so a
-// bypass-exclude prefix for the same family would make the compiled policy
-// ambiguous (multiple intercept prefixes) or be silently ignored.
-func (i *Inbound) validateBypassExcludeConflicts() error {
-	conflict := func(name, family string, bypassExclude, fakeIP netip.Prefix) error {
-		if fakeIP.IsValid() && bypassExclude.IsValid() {
-			return E.New(name, " bypass-exclude ", bypassExclude, " conflicts with the ", family,
-				" fake-ip force-intercept prefix ", fakeIP, "; use redir-host DNS mode or drop one of them")
-		}
-		return nil
-	}
-	for _, prefix := range i.localBypassExclude {
-		if prefix.Addr().Is4() {
-			if err := conflict("local", "IPv4", prefix, i.fakeIPIPv4Prefix); err != nil {
-				return err
-			}
-		} else if err := conflict("local", "IPv6", prefix, i.fakeIPIPv6Prefix); err != nil {
-			return err
-		}
-	}
-	for _, prefix := range i.sharedBypassExclude {
-		if prefix.Addr().Is4() {
-			if err := conflict("shared", "IPv4", prefix, i.fakeIPIPv4Prefix); err != nil {
-				return err
-			}
-		} else if err := conflict("shared", "IPv6", prefix, i.fakeIPIPv6Prefix); err != nil {
-			return err
-		}
-	}
-	return nil
-}
+// Fake-ip and bypass-exclude prefixes may share an address family: the current
+// sing-ebpf backend compiles every DecisionIntercept CIDR into the force LPM
+// trie (CompiledPolicy.localForce), so multiple force-intercept prefixes are
+// supported. An older backend had a single slot per family, which is why this
+// tree used to reject the combination; that check is no longer needed.
 
 // eBPFPrivateDestinationPrefixes mirrors the data-plane safety/private ranges
 // as final pass decisions. The eBPF library receives only these decisions; it
@@ -78,9 +50,6 @@ var eBPFPrivateDestinationPrefixes = []netip.Prefix{
 }
 
 func (i *Inbound) compileActionPolicy() (commonEBPF.CompiledPolicy, error) {
-	if err := i.validateBypassExcludeConflicts(); err != nil {
-		return commonEBPF.CompiledPolicy{}, err
-	}
 	policy := commonEBPF.ActionPolicy{
 		Local: commonEBPF.ActionScope{
 			Default: commonEBPF.DecisionIntercept,
