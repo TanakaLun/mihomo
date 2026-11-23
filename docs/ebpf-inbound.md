@@ -140,7 +140,12 @@ Field behavior:
 - `local.cgroup-path`: absolute cgroup v2 directory for the cgroup data plane;
   requires `data-plane=cgroup`. Empty means auto-detect.
 - `local.dns-mode` / `shared.dns-mode`: `hijack` (default), `respect_policy`,
-  or `off`. `hijack` force-rewrites port 53; `off` always passes 53.
+  `respect_bypass`, or `off`. Every mode except `off` intercepts port 53 into
+  the core's DNS pipeline: `hijack` answers with the local resolver, while
+  `respect_policy` / `respect_bypass` keep the configured nameserver policy.
+  The port-53 intercept is applied before bypass CIDRs, so a `bypass-rule-set`
+  covering a domestic DNS address (for example CN_IP and 223.5.5.5) no longer
+  prevents fake-ip allocation. `off` always passes 53 in kernel.
 - `local.bypass-private-address`: private/groupcast/link-local destinations
   keep their real IP and pass in kernel. Default true.
 - `local.bypass-exclude` / `shared.bypass-exclude`: CIDR prefixes that are

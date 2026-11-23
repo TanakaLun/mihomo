@@ -98,5 +98,51 @@ func TestCompileActionPolicyFakeIPWithBypassExclude(t *testing.T) {
 	}
 }
 
+// Every dns-mode except off must compile an intercept port decision for 53.
+// Without it the kernel keeps evaluating bypass CIDRs and a bypass-rule-set
+// that covers the upstream DNS address would pass the query in kernel, so the
+// core never allocates a fake-ip (issue #45).
+func TestAppendPortDecisionsDNSModes(t *testing.T) {
+	cases := []struct {
+		mode string
+		want commonEBPF.Decision
+	}{
+		{dnsModeHijack, commonEBPF.DecisionIntercept},
+		{dnsModeRespectPolicy, commonEBPF.DecisionIntercept},
+		{dnsModeRespectBypass, commonEBPF.DecisionIntercept},
+		{dnsModeOff, commonEBPF.DecisionPass},
+	}
+	for _, tc := range cases {
+		var scope commonEBPF.ActionScope
+		appendPortDecisions(&scope, nil, tc.mode, true, true)
+		tcp, tcpSet := commonEBPF.Decision(0), false
+		udp, udpSet := commonEBPF.Decision(0), false
+		for _, decision := range scope.DestinationPort {
+			if decision.Port != 53 {
+				continue
+			}
+			switch decision.Protocol {
+			case commonEBPF.ProtocolTCP:
+				tcp, tcpSet = decision.Action, true
+			case commonEBPF.ProtocolUDP:
+				udp, udpSet = decision.Action, true
+			}
+		}
+		if !tcpSet || !udpSet || tcp != tc.want || udp != tc.want {
+			t.Fatalf("mode %s: tcp=%v/%v udp=%v/%v, want both %v",
+				tc.mode, tcp, tcpSet, udp, udpSet, tc.want)
+		}
+	}
+	// A bypass-port range that includes 53 must not turn the DNS intercept
+	// into a pass while dns-mode is active.
+	var scope commonEBPF.ActionScope
+	appendPortDecisions(&scope, []PortRange{{Start: 53, End: 53}}, dnsModeRespectPolicy, true, true)
+	for _, decision := range scope.DestinationPort {
+		if decision.Port == 53 && decision.Action != commonEBPF.DecisionIntercept {
+			t.Fatalf("bypass-port 53 overrode the DNS intercept: %v", decision.Action)
+		}
+	}
+}
+
 var _ = LC.EBPF{}
 var _ = commonEBPF.DecisionIntercept

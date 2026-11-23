@@ -176,14 +176,21 @@ func appendPortDecisions(scope *commonEBPF.ActionScope, bypass []PortRange, dnsM
 			}
 		}
 	}
-	if dnsMode == dnsModeHijack {
+	// hijack, respect_policy and respect_bypass all need port 53 delivered to
+	// the core; the mode only changes how the core answers (forced local
+	// resolver vs nameserver-policy). Without an intercept port decision the
+	// kernel keeps evaluating bypass CIDRs, so a bypass-rule-set covering the
+	// upstream DNS address (for example CN_IP and 223.5.5.5) would pass the
+	// query in kernel before it ever reaches the DNS pipeline and no fake-ip
+	// would be allocated. Only off passes port 53 in kernel.
+	if dnsMode != dnsModeOff {
 		if enableTCP {
 			scope.DestinationPort = append(scope.DestinationPort, commonEBPF.PortDecision{Protocol: commonEBPF.ProtocolTCP, Port: 53, Action: commonEBPF.DecisionIntercept})
 		}
 		if enableUDP {
 			scope.DestinationPort = append(scope.DestinationPort, commonEBPF.PortDecision{Protocol: commonEBPF.ProtocolUDP, Port: 53, Action: commonEBPF.DecisionIntercept})
 		}
-	} else if dnsMode == dnsModeOff {
+	} else {
 		if enableTCP {
 			scope.DestinationPort = append(scope.DestinationPort, commonEBPF.PortDecision{Protocol: commonEBPF.ProtocolTCP, Port: 53, Action: commonEBPF.DecisionPass})
 		}
